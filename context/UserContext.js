@@ -1,155 +1,257 @@
-// User Context for Seventh Sense AI Coach
-// Manages user preferences, theme, and settings
+// Seventh Sense - User Context
+// Provides user preferences with hydration + debounced persistence
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { setEveningRecapEnabled } from '../utils/notify';
 
-// User preferences interface
-export const UserPrefs = {
-  name: '',
-  timezone: '',
-  aiTone: 'coach', // 'coach' | 'friend' | 'zen'
-  theme: 'system', // 'system' | 'light' | 'dark'
-  defaultReminderTime: '09:00',
-  eveningRecapEnabled: false,
-};
+// Optional expo-localization; code must work without it
+let Localization;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  Localization = require('expo-localization');
+} catch (e) {
+  Localization = null;
+}
 
-// Context
-const UserContext = createContext();
+export const UserContext = createContext(null);
 
-// Provider component
-export const UserProvider = ({ children }) => {
-  const [prefs, setPrefs] = useState(UserPrefs);
-  const [isLoading, setIsLoading] = useState(true);
+const STORAGE_KEY = 'SS_USER_PREFS_V1';
+const LEGACY_STORAGE_KEY = 'user_preferences';
+const LATEST_VERSION = 1;
+
+// Debounce utility with flush support
+function debounce(fn, delay = 400) {
+  let timer = null;
+  let lastArgs = null;
+  let lastThis = null;
+  const debounced = function (...args) {
+    lastArgs = args;
+    lastThis = this;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      // @ts-ignore
+      fn.apply(lastThis, lastArgs);
+    }, delay);
+  };
+  debounced.flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+      // @ts-ignore
+      fn.apply(lastThis, lastArgs);
+    }
+  };
+  return debounced;
+}
+
+function getDeviceTimezone() {
+  try {
+    const tz = Localization?.getCalendars?.()?.[0]?.timeZone;
+    if (typeof tz === 'string' && tz.length > 0) return tz;
+  } catch {}
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (typeof tz === 'string' && tz.length > 0) return tz;
+  } catch {}
+  return 'UTC';
+}
+
+function defaultPrefs(tz) {
+  return {
+    name: undefined,
+    theme: 'system', // 'system' | 'light' | 'dark'
+    aiTone: 'coach', // 'coach' | 'friend' | 'zen'
+    defaultReminder: undefined, // HH:mm
+    defaultReminderTime: undefined, // legacy alias
+    eveningRecap: true,
+    eveningRecapEnabled: true, // legacy alias
+    timezone: tz || getDeviceTimezone(),
+    version: LATEST_VERSION,
+  };
+}
+
+function migratePrefs(obj) {
+  const tz = getDeviceTimezone();
+  let migrated = obj || {};
+  // Handle legacy field names
+  if (migrated.defaultReminderTime && !migrated.defaultReminder) {
+    migrated.defaultReminder = migrated.defaultReminderTime;
+  }
+  if (typeof migrated.eveningRecapEnabled === 'boolean' && migrated.eveningRecap === undefined) {
+    migrated.eveningRecap = migrated.eveningRecapEnabled;
+  }
+
+  // Coerce allowed values
+  const theme = ['system', 'light', 'dark'].includes(migrated.theme)
+    ? migrated.theme
+    : 'system';
+  const aiTone = ['coach', 'friend', 'zen'].includes(migrated.aiTone)
+    ? migrated.aiTone
+    : 'coach';
+
+  const base = defaultPrefs(tz);
+  const merged = {
+    ...base,
+    ...migrated,
+    theme,
+    aiTone,
+    timezone: typeof migrated.timezone === 'string' && migrated.timezone.length > 0 ? migrated.timezone : tz,
+    version: LATEST_VERSION,
+  };
+
+  // Validate defaultReminder format
+  if (
+    merged.defaultReminder !== undefined &&
+    !/^\d{2}:\d{2}$/.test(String(merged.defaultReminder))
+  ) {
+    merged.defaultReminder = undefined;
+  }
+  // Keep legacy aliases in sync
+  merged.defaultReminderTime = merged.defaultReminder;
+  merged.eveningRecapEnabled = !!merged.eveningRecap;
+  return merged;
+}
+
+export function UserProvider({ children }) {
+  const [prefs, setPrefs] = useState(() => defaultPrefs(getDeviceTimezone()));
   const [isHydrated, setIsHydrated] = useState(false);
 
-  // Load preferences from storage
-  useEffect(() => {
-    loadPreferences();
-  }, []);
-
-  // Load preferences from AsyncStorage
-  const loadPreferences = async () => {
-    try {
-      setIsLoading(true);
-      
-      const storedPrefs = await AsyncStorage.getItem('user_preferences');
-      if (storedPrefs) {
-        const parsedPrefs = JSON.parse(storedPrefs);
-        
-        // Merge with defaults to handle missing properties
-        const mergedPrefs = { ...UserPrefs, ...parsedPrefs };
-        
-        // Set timezone if not already set
-        if (!mergedPrefs.timezone) {
-          mergedPrefs.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        }
-        
-        setPrefs(mergedPrefs);
-        
-        // Update evening recap setting
-        if (mergedPrefs.eveningRecapEnabled) {
-          await setEveningRecapEnabled(true);
-        }
-      } else {
-        // Set default timezone
-        const defaultPrefs = {
-          ...UserPrefs,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        };
-        setPrefs(defaultPrefs);
+  // Persist (debounced)
+  const saveDebouncedRef = useRef(
+    debounce(async (next) => {
+      try {
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      } catch (e) {
+        console.warn('UserPrefs save failed:', e?.message || e);
       }
-    } catch (error) {
-      console.error('Error loading user preferences:', error);
-      // Set defaults on error
-      const defaultPrefs = {
-        ...UserPrefs,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      };
-      setPrefs(defaultPrefs);
-    } finally {
-      setIsLoading(false);
+    }, 450)
+  );
+
+  // Hydration logic
+  const hydrateUserPrefs = async () => {
+    try {
+      const json = (await AsyncStorage.getItem(STORAGE_KEY)) ?? (await AsyncStorage.getItem(LEGACY_STORAGE_KEY));
+      if (!json) {
+        const next = defaultPrefs(getDeviceTimezone());
+        setPrefs(next);
+        setIsHydrated(true);
+        return;
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(json);
+      } catch (e) {
+        console.warn('UserPrefs parse failed, using defaults');
+        parsed = null;
+      }
+      const next = migratePrefs(parsed || {});
+      setPrefs(next);
+      setIsHydrated(true);
+      // Sync evening recap scheduler
+      if (typeof next.eveningRecap === 'boolean') {
+        try { await setEveningRecapEnabled(next.eveningRecap); } catch {}
+      }
+    } catch (e) {
+      console.warn('UserPrefs hydration failed:', e?.message || e);
+      setPrefs(defaultPrefs(getDeviceTimezone()));
       setIsHydrated(true);
     }
   };
 
-  // Save preferences to storage (debounced)
-  const savePreferences = async (newPrefs) => {
-    try {
-      await AsyncStorage.setItem('user_preferences', JSON.stringify(newPrefs));
-    } catch (error) {
-      console.error('Error saving user preferences:', error);
+  // Initial mount: hydrate and flush pending save on unmount
+  useEffect(() => {
+    hydrateUserPrefs();
+    return () => {
+      saveDebouncedRef.current?.flush?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist on change after hydration
+  useEffect(() => {
+    if (isHydrated) {
+      saveDebouncedRef.current(prefs);
     }
+  }, [prefs, isHydrated]);
+
+  // Setters (clamped, immutable)
+  const setName = (name) => {
+    setPrefs((p) => ({ ...p, name: name || undefined }));
   };
 
-  // Debounced save function
-  let saveTimeout;
-  const debouncedSave = (newPrefs) => {
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => savePreferences(newPrefs), 1000);
+  const setTheme = (theme) => {
+    const allowed = ['system', 'light', 'dark'];
+    setPrefs((p) => ({ ...p, theme: allowed.includes(theme) ? theme : p.theme }));
   };
 
-  // Update preferences
-  const updatePrefs = (updates) => {
-    const newPrefs = { ...prefs, ...updates };
-    setPrefs(newPrefs);
-    debouncedSave(newPrefs);
+  const setAiTone = (tone) => {
+    const allowed = ['coach', 'friend', 'zen'];
+    setPrefs((p) => ({ ...p, aiTone: allowed.includes(tone) ? tone : p.aiTone }));
   };
 
-  // Individual preference setters
-  const setName = (name) => updatePrefs({ name });
-  const setTheme = (theme) => updatePrefs({ theme });
-  const setAiTone = (aiTone) => updatePrefs({ aiTone });
-  const setDefaultReminderTime = (defaultReminderTime) => updatePrefs({ defaultReminderTime });
-  
+  const setDefaultReminder = (time) => {
+    if (time !== undefined && !/^\d{2}:\d{2}$/.test(String(time))) {
+      return;
+    }
+    setPrefs((p) => ({
+      ...p,
+      defaultReminder: time || undefined,
+      defaultReminderTime: time || undefined,
+    }));
+  };
+
+  // Back-compat helper used in existing screens
+  const setDefaultReminderTime = (time) => setDefaultReminder(time);
+
   const toggleEveningRecap = async (enabled) => {
-    updatePrefs({ eveningRecapEnabled: enabled });
-    await setEveningRecapEnabled(enabled);
+    // Accept optional boolean param; if undefined, toggle
+    setPrefs((p) => {
+      const nextVal = typeof enabled === 'boolean' ? enabled : !p.eveningRecap;
+      // Side-effect: keep scheduler in sync
+      setEveningRecapEnabled(nextVal).catch(() => {});
+      return { ...p, eveningRecap: nextVal, eveningRecapEnabled: nextVal };
+    });
   };
 
-  // Get current theme (resolves system theme)
-  const getCurrentTheme = () => {
-    if (prefs.theme === 'system') {
-      // For now, default to light. In production, you'd use a proper theme detection
-      return 'light';
-    }
-    return prefs.theme;
-  };
-
-  // Check if dark mode is active
+  // Provide a currentTheme helper (back-compat)
+  const getCurrentTheme = () => prefs.theme || 'system';
   const isDarkMode = () => getCurrentTheme() === 'dark';
 
-  // Context value
-  const value = {
-    prefs,
-    isLoading,
-    isHydrated,
-    setName,
-    setTheme,
-    setAiTone,
-    setDefaultReminderTime,
-    toggleEveningRecap,
-    getCurrentTheme,
-    isDarkMode,
-    updatePrefs,
-  };
-
-  return (
-    <UserContext.Provider value={value}>
-      {children}
-    </UserContext.Provider>
+  const value = useMemo(
+    () => ({
+      prefs,
+      isHydrated,
+      // Setters (new API)
+      setName,
+      setTheme,
+      setAiTone,
+      setDefaultReminder,
+      toggleEveningRecap,
+      hydrateUserPrefs,
+      // Back-compat exports used in parts of the app
+      setDefaultReminderTime,
+      getCurrentTheme,
+      isDarkMode,
+    }),
+    [prefs, isHydrated]
   );
-};
 
-// Custom hook to use user context
-export const useUser = () => {
-  const context = useContext(UserContext);
-  if (!context) {
-    throw new Error('useUser must be used within a UserProvider');
-  }
-  return context;
-};
+  return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
+}
 
-// Export default
+export function useUser() {
+  const ctx = useContext(UserContext);
+  if (!ctx) throw new Error('useUser must be used within a UserProvider');
+  return ctx;
+}
+
 export default UserContext;

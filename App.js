@@ -1,80 +1,188 @@
-// Seventh Sense AI Coach - Main App
-// Integrates navigation, providers, and theme management
+// Seventh Sense - App Root
+// - Initializes theme from UserContext
+// - Registers Expo Notifications handler
+// - Hydrates UserContext + Zustand store, precomputes todayKey
+// - Renders NavigationContainer (via /navigation) with theme
+// - Shows minimal loading UI until hydration completes
 
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, StatusBar } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { UserProvider } from './context/UserContext';
-import { useUser } from './context/UserContext';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, ActivityIndicator, Appearance, StatusBar } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
+import AppNavigator, { linking as navLinking } from './navigation';
+import { NavigationContainer } from '@react-navigation/native';
+import { UserProvider, useUser } from './context/UserContext';
 import { useHabitsStore } from './store/habitsStore';
-import Navigation from './navigation';
-import { configureNotifications } from './utils/notify';
+import { getTodayKey } from './utils/date';
+import colorsModule, { darkColors as darkOverrides } from './theme/colors';
 
-// App wrapper component
-const AppWrapper = () => {
-  const { isHydrated: userHydrated } = useUser();
-  const { isHydrated: storeHydrated, hydrate: hydrateStore } = useHabitsStore();
-  const [isLoading, setIsLoading] = useState(true);
+// Storage keys (centralized)
+const STORAGE_KEYS = {
+  USER_PREFS: 'SS_USER_PREFS_V1',
+  STORE: 'SS_STORE_V1',
+};
 
-  // Initialize app
-  useEffect(() => {
-    const initializeApp = async () => {
-      try {
-        // Configure notifications
-        configureNotifications();
-        
-        // Hydrate store
-        await hydrateStore();
-        
-        // Wait for both contexts to be hydrated
-        if (userHydrated && storeHydrated) {
-          setIsLoading(false);
-        }
-      } catch (error) {
-        console.error('Error initializing app:', error);
-        setIsLoading(false);
-      }
+// Notifications: register a basic handler once (no custom sound/vibration)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
+
+// Minimal theme computation: builds appTheme and React Navigation theme
+function useResolvedTheme(prefsTheme) {
+  const systemScheme = Appearance.getColorScheme?.() || 'light';
+  const resolvedScheme = prefsTheme === 'system' ? systemScheme : prefsTheme || 'light';
+
+  const { appTheme, navTheme } = useMemo(() => {
+    const isDark = resolvedScheme === 'dark';
+    const base = colorsModule;
+    const dark = darkOverrides || {};
+
+    const palette = {
+      background: isDark ? dark.background?.primary || '#0f172a' : base.background.primary,
+      text: isDark ? dark.text?.primary || '#f8fafc' : base.text.primary,
+      card: isDark ? dark.background?.secondary || '#1e293b' : base.background.secondary,
+      border: isDark ? dark.border?.light || '#334155' : base.border.light,
+      primary: base.primary[500],
     };
 
-    initializeApp();
-  }, [userHydrated, storeHydrated]);
+    const appThemeObj = {
+      scheme: resolvedScheme,
+      colors: palette,
+    };
 
-  // Show loading screen while hydrating
-  if (isLoading) {
+    const navThemeObj = {
+      dark: isDark,
+      colors: {
+        primary: palette.primary,
+        background: palette.background,
+        card: palette.card,
+        text: palette.text,
+        border: palette.border,
+        notification: palette.primary,
+      },
+    };
+
+    return { appTheme: appThemeObj, navTheme: navThemeObj };
+  }, [resolvedScheme]);
+
+  return { colorScheme: resolvedScheme, appTheme, navTheme };
+}
+
+// Boot manager handles hydration and loading state
+function BootManager() {
+  const { prefs, isHydrated: userHydrated } = useUser();
+  const store = useHabitsStore();
+  const [isBooting, setIsBooting] = useState(true);
+  const todayKeyRef = useRef(null);
+
+  const { navTheme, colorScheme } = useResolvedTheme(prefs?.theme || 'system');
+
+  // Fallback hydration for store if missing
+  const fallbackHydrateStore = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEYS.STORE);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Expecting shape { habits:[], logs:[] }
+        if (parsed && typeof parsed === 'object') {
+          useHabitsStore.setState?.({
+            habits: Array.isArray(parsed.habits) ? parsed.habits : [],
+            logs: Array.isArray(parsed.logs) ? parsed.logs : [],
+            isHydrated: true,
+            isLoading: false,
+          });
+        } else {
+          useHabitsStore.setState?.({ isHydrated: true, isLoading: false });
+        }
+      } else {
+        useHabitsStore.setState?.({ isHydrated: true, isLoading: false });
+      }
+    } catch (e) {
+      console.warn('Fallback store hydration failed:', e?.message || e);
+      useHabitsStore.setState?.({ isHydrated: true, isLoading: false });
+    }
+  };
+
+  // Boot: hydrate store once
+  useEffect(() => {
+    const hydrate = async () => {
+      try {
+        if (typeof store.hydrate === 'function') {
+          await store.hydrate();
+        } else {
+          await fallbackHydrateStore();
+        }
+      } catch (e) {
+        console.warn('Store hydration error:', e?.message || e);
+      }
+    };
+    hydrate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Precompute today key once user prefs available
+  useEffect(() => {
+    try {
+      const tz = prefs?.timezone;
+      todayKeyRef.current = getTodayKey(tz);
+    } catch (e) {
+      todayKeyRef.current = getTodayKey();
+    }
+  }, [prefs?.timezone]);
+
+  // When both hydrated, hide splash
+  useEffect(() => {
+    if (userHydrated && store.isHydrated) {
+      setIsBooting(false);
+    }
+  }, [userHydrated, store.isHydrated]);
+
+  // Loading/Splash UI
+  if (isBooting) {
+    const bg = navTheme.colors.background;
+    const text = navTheme.colors.text;
     return (
-      <View style={styles.loadingContainer}>
-        <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" />
-        
-        <View style={styles.loadingContent}>
-          <View style={styles.logo}>
-            <Ionicons name="sparkles" size={48} color="#6366f1" />
-          </View>
-          
-          <Text style={styles.appName}>Seventh Sense</Text>
-          <Text style={styles.appTagline}>AI Habit Coach</Text>
-          
-          <View style={styles.loadingIndicator}>
-            <Ionicons name="ellipsis-horizontal" size={24} color="#6366f1" />
-            <Text style={styles.loadingText}>Loading your habits...</Text>
-          </View>
-        </View>
+      <View
+        style={[styles.loadingContainer, { backgroundColor: bg }]}
+        accessibilityLabel="Loading Seventh Sense"
+        accessible
+      >
+        <StatusBar
+          barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
+          backgroundColor={bg}
+        />
+        <ActivityIndicator size="large" color={navTheme.colors.primary} />
+        <Text style={[styles.loadingText, { color: text }]}>Seventh Sense</Text>
       </View>
     );
   }
 
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor="#f8fafc" />
-      <Navigation />
+      <StatusBar
+        barStyle={colorScheme === 'dark' ? 'light-content' : 'dark-content'}
+        backgroundColor={navTheme.colors.background}
+      />
+      <NavigationContainer theme={navTheme} linking={navLinking}>
+        <AppNavigator />
+      </NavigationContainer>
     </>
   );
-};
+}
 
-// Main App component
+// Root App
 export default function App() {
   return (
     <UserProvider>
-      <AppWrapper />
+      <SafeAreaProvider>
+        <BootManager />
+      </SafeAreaProvider>
     </UserProvider>
   );
 }
@@ -82,54 +190,11 @@ export default function App() {
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
   },
-  
-  loadingContent: {
-    alignItems: 'center',
-  },
-  
-  logo: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: '#6366f1',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  
-  appName: {
-    fontSize: 36,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 8,
-  },
-  
-  appTagline: {
-    fontSize: 18,
-    color: '#64748b',
-    marginBottom: 48,
-  },
-  
-  loadingIndicator: {
-    alignItems: 'center',
-    gap: 12,
-  },
-  
   loadingText: {
-    fontSize: 16,
-    color: '#64748b',
-    fontStyle: 'italic',
+    marginTop: 12,
+    fontWeight: '600',
   },
 });

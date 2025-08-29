@@ -1,318 +1,262 @@
-// Notification utilities for Seventh Sense AI Coach
-// Handles local notifications with quiet hours and evening recap
+// Seventh Sense - Notification utilities (Expo Notifications, TypeScript)
+// Notes on timezone: Expo scheduled triggers run in the device's local timezone.
+// The `tz` parameter is advisory; we compute target times in that IANA timezone,
+// then schedule using the device's local clock best-effort.
 
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getTodayKey } from './date';
 
-// Storage keys
-const PERMISSION_KEY = 'notification_permission';
-const EVENING_RECAP_KEY = 'evening_recap_enabled';
+export type PermissionState = 'granted' | 'denied' | 'undetermined';
+export type HabitNotifMap = Record<string, string>; // habitId -> notifId
 
-// Notification types
-export interface NotificationData {
-  habitId: string;
-  type: 'daily' | 'evening_recap';
-  time?: string; // HH:mm for daily notifications
+const SS_NOTIF_PERMISSION_V1 = 'SS_NOTIF_PERMISSION_V1';
+const SS_NOTIF_MAP_V1 = 'SS_NOTIF_MAP_V1';
+const SS_RECAP_STATE_V1 = 'SS_RECAP_STATE_V1';
+const SS_RECAP_ENABLED_V1 = 'SS_RECAP_ENABLED_V1'; // used by UserContext extras
+
+type RecapState = { dateKey: string; notifId?: string };
+
+// Set a default handler once; safe to call multiple times (last one wins)
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
+
+// ---------------- Helpers ----------------
+export function parseHHmm(hhmm: string): { hour: number; minute: number } | null {
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [h, m] = hhmm.split(':').map((v) => Number(v));
+  if (Number.isNaN(h) || Number.isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return { hour: h, minute: m };
 }
 
+export function inQuietHours(hour: number, minute: number): boolean {
+  // Quiet window: 22:00..23:59 and 00:00..06:59
+  if (hour >= 22) return true;
+  if (hour < 7) return true;
+  return false;
+}
+
+function pad2(n: number) { return n < 10 ? `0${n}` : String(n); }
+
+function getTodayKey(tz: string): string {
+  const zone = tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  return fmt.format(new Date()); // en-CA gives YYYY-MM-DD
+}
+
+// Build a Date intended to represent the tz wall-clock time as an absolute instant.
+// We construct a UTC time using the intended Y/M/D HH:mm, which is a reasonable best-effort.
+export function toDeviceDateFromTZ(tz: string, y: number, m: number, d: number, hh: number, mm: number): Date {
+  // We cannot coerce device scheduling to a foreign tz; using UTC avoids local DST drift here.
+  return new Date(Date.UTC(y, m - 1, d, hh, mm, 0, 0));
+}
+
+async function loadJSON<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    console.warn('[notify] loadJSON failed', key, e);
+    return fallback;
+  }
+}
+
+async function saveJSON(key: string, value: any): Promise<void> {
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn('[notify] saveJSON failed', key, e);
+  }
+}
+
+async function getStoredPermission(): Promise<PermissionState> {
+  const stored = await AsyncStorage.getItem(SS_NOTIF_PERMISSION_V1);
+  return (stored as PermissionState) || 'undetermined';
+}
+
+// ---------------- Public API ----------------
+
 /**
- * Setup notification permissions
+ * Request notification permissions once and persist result.
  */
 export async function setupPermissions(): Promise<boolean> {
   try {
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
-    
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
+    const cached = await getStoredPermission();
+    if (cached === 'granted') return true;
+
+    const current = await Notifications.getPermissionsAsync();
+    let status = current.status;
+    if (status !== 'granted') {
+      const req = await Notifications.requestPermissionsAsync();
+      status = req.status;
     }
-    
-    const hasPermission = finalStatus === 'granted';
-    await AsyncStorage.setItem(PERMISSION_KEY, JSON.stringify(hasPermission));
-    
-    return hasPermission;
-  } catch (error) {
-    console.error('Error setting up notification permissions:', error);
+    const normalized: PermissionState = status === 'granted' ? 'granted' : 'denied';
+    await AsyncStorage.setItem(SS_NOTIF_PERMISSION_V1, normalized);
+    return normalized === 'granted';
+  } catch (e) {
+    console.warn('[notify] setupPermissions error', e);
+    await AsyncStorage.setItem(SS_NOTIF_PERMISSION_V1, 'denied');
     return false;
   }
 }
 
 /**
- * Check if notifications are permitted
+ * Schedule a daily repeating notification for a habit at timeHHmm (HH:mm).
+ * Applies quiet hours: 22:00–06:59 → schedule 07:05 instead.
+ * Note: Expo triggers use device local tz; `tz` is advisory for computing intent.
  */
-export async function hasNotificationPermission(): Promise<boolean> {
+export async function scheduleDaily(habitId: string, timeHHmm: string, tz: string): Promise<string> {
   try {
-    const stored = await AsyncStorage.getItem(PERMISSION_KEY);
-    if (stored !== null) {
-      return JSON.parse(stored);
-    }
-    
-    // Check system permission
-    const { status } = await Notifications.getPermissionsAsync();
-    const hasPermission = status === 'granted';
-    await AsyncStorage.setItem(PERMISSION_KEY, JSON.stringify(hasPermission));
-    
-    return hasPermission;
-  } catch (error) {
-    console.error('Error checking notification permission:', error);
-    return false;
-  }
-}
+    const ok = await setupPermissions();
+    if (!ok) return '';
 
-/**
- * Schedule daily notification for a habit
- */
-export async function scheduleDaily(
-  habitId: string,
-  timeHHmm: string,
-  timezone?: string
-): Promise<string | null> {
-  try {
-    const hasPermission = await hasNotificationPermission();
-    if (!hasPermission) {
-      console.log('No notification permission, skipping schedule');
-      return null;
+    const parsed = parseHHmm(timeHHmm);
+    if (!parsed) return '';
+    let { hour, minute } = parsed;
+
+    // Enforce quiet hours
+    if (inQuietHours(hour, minute)) {
+      hour = 7; minute = 5;
     }
-    
-    // Parse time
-    const [hours, minutes] = timeHHmm.split(':').map(Number);
-    if (isNaN(hours) || isNaN(minutes)) {
-      throw new Error(`Invalid time format: ${timeHHmm}`);
-    }
-    
-    // Check quiet hours (22:00 - 07:00)
-    let targetHours = hours;
-    let targetMinutes = minutes;
-    let targetDate = new Date();
-    
-    if (hours >= 22 || hours < 7) {
-      // Shift to 07:05 next day
-      targetHours = 7;
-      targetMinutes = 5;
-      targetDate.setDate(targetDate.getDate() + 1);
-    }
-    
-    // Set target time
-    targetDate.setHours(targetHours, targetMinutes, 0, 0);
-    
-    // If time has passed today, schedule for tomorrow
-    if (targetDate <= new Date()) {
-      targetDate.setDate(targetDate.getDate() + 1);
-    }
-    
-    // Create notification content
-    const habit = await getHabitName(habitId);
-    const title = 'Time for your habit!';
-    const body = `Don't forget to ${habit.toLowerCase()} today.`;
-    
-    // Schedule the notification
-    const notificationId = await Notifications.scheduleNotificationAsync({
+
+    // Cancel existing if any
+    await cancelScheduled(habitId);
+
+    const notifId = await Notifications.scheduleNotificationAsync({
       content: {
-        title,
-        body,
-        data: { habitId, type: 'daily' } as NotificationData,
+        title: 'Seventh Sense',
+        body: 'Time for your habit. Open to check off today.',
+        data: { habitId, type: 'habit-daily' },
+        priority: Notifications.AndroidNotificationPriority.DEFAULT,
       },
-      trigger: {
-        hour: targetHours,
-        minute: targetMinutes,
-        repeats: true,
-      },
+      trigger: { hour, minute, repeats: true },
     });
-    
-    console.log(`Scheduled daily notification for habit ${habitId} at ${targetHours}:${targetMinutes.toString().padStart(2, '0')}`);
-    return notificationId;
-    
-  } catch (error) {
-    console.error('Error scheduling daily notification:', error);
-    return null;
+
+    const map = await loadJSON<HabitNotifMap>(SS_NOTIF_MAP_V1, {});
+    map[habitId] = notifId;
+    await saveJSON(SS_NOTIF_MAP_V1, map);
+    return notifId;
+  } catch (e) {
+    console.warn('[notify] scheduleDaily error', e);
+    return '';
   }
 }
 
 /**
- * Cancel scheduled notification for a habit
+ * Cancel any scheduled daily notification for a habit and remove mapping.
  */
 export async function cancelScheduled(habitId: string): Promise<void> {
   try {
-    const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
-    
-    for (const notification of scheduledNotifications) {
-      const data = notification.content.data as NotificationData;
-      if (data?.habitId === habitId && data?.type === 'daily') {
-        await Notifications.cancelScheduledNotificationAsync(notification.identifier);
-        console.log(`Cancelled notification for habit ${habitId}`);
-      }
+    const map = await loadJSON<HabitNotifMap>(SS_NOTIF_MAP_V1, {});
+    const existing = map[habitId];
+    if (existing) {
+      try { await Notifications.cancelScheduledNotificationAsync(existing); } catch {}
+      delete map[habitId];
+      await saveJSON(SS_NOTIF_MAP_V1, map);
     }
-  } catch (error) {
-    console.error('Error cancelling scheduled notification:', error);
+  } catch (e) {
+    console.warn('[notify] cancelScheduled error', e);
   }
 }
 
 /**
- * Schedule evening recap if needed
+ * Idempotently schedule one recap notification for today at `time` (HH:mm).
+ * If already scheduled for today or time has passed, returns null.
+ * Applies quiet hours: if inside 22:00–06:59, shifts to 07:05 next day.
  */
-export async function scheduleEveningRecapIfNeeded(
-  timezone?: string,
-  time: string = '20:30'
-): Promise<string | null> {
+export async function scheduleEveningRecapIfNeeded(tz: string, time: string = '20:30'): Promise<string | null> {
   try {
-    const hasPermission = await hasNotificationPermission();
-    if (!hasPermission) {
+    const ok = await setupPermissions();
+    if (!ok) return null;
+
+    const todayKey = getTodayKey(tz);
+    const state = await loadJSON<RecapState | null>(SS_RECAP_STATE_V1, null);
+    if (state && state.dateKey === todayKey && state.notifId) {
+      return null; // already scheduled for today
+    }
+
+    const parsed = parseHHmm(time);
+    if (!parsed) return null;
+    let { hour, minute } = parsed;
+
+    // Build target in tz for today
+    const [y, m, d] = todayKey.split('-').map((x) => Number(x));
+    let targetY = y, targetM = m, targetD = d, targetH = hour, targetMin = minute;
+
+    // Current time in tz
+    const nowFmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const parts = nowFmt.formatToParts(new Date());
+    const nowH = Number(parts.find((p) => p.type === 'hour')?.value || '0');
+    const nowMin = Number(parts.find((p) => p.type === 'minute')?.value || '0');
+    const nowTotal = nowH * 60 + nowMin;
+    const targetTotal = hour * 60 + minute;
+
+    if (nowTotal >= targetTotal) {
+      // too late today
       return null;
     }
-    
-    // Check if evening recap is enabled
-    const enabled = await AsyncStorage.getItem(EVENING_RECAP_KEY);
-    if (enabled !== 'true') {
-      return null;
+
+    // Quiet hours: shift to 07:05 next day
+    if (inQuietHours(hour, minute)) {
+      // move to next day 07:05 in tz
+      // Increment d safely by constructing a Date and adding 1 day
+      const base = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+      const next = new Date(base.getTime() + 24 * 60 * 60 * 1000);
+      targetY = next.getUTCFullYear();
+      targetM = next.getUTCMonth() + 1;
+      targetD = next.getUTCDate();
+      targetH = 7;
+      targetMin = 5;
     }
-    
-    // Parse time
-    const [hours, minutes] = time.split(':').map(Number);
-    if (isNaN(hours) || isNaN(minutes)) {
-      throw new Error(`Invalid time format: ${time}`);
-    }
-    
-    // Check quiet hours
-    if (hours >= 22 || hours < 7) {
-      // Shift to 07:05 next day
-      hours = 7;
-      minutes = 5;
-    }
-    
-    // Set target time
-    const targetDate = new Date();
-    targetDate.setHours(hours, minutes, 0, 0);
-    
-    // If time has passed today, schedule for tomorrow
-    if (targetDate <= new Date()) {
-      targetDate.setDate(targetDate.getDate() + 1);
-    }
-    
-    // Schedule the notification
-    const notificationId = await Notifications.scheduleNotificationAsync({
+
+    // Build absolute date for device schedule
+    const targetDate = toDeviceDateFromTZ(tz, targetY, targetM, targetD, targetH, targetMin);
+
+    const notifId = await Notifications.scheduleNotificationAsync({
       content: {
-        title: 'Evening Habit Check-in',
-        body: 'How did your habits go today? Take a moment to reflect.',
-        data: { type: 'evening_recap' } as NotificationData,
+        title: 'Evening recap',
+        body: 'Wrap your day: check any remaining habits.',
+        data: { type: 'recap' },
+        priority: Notifications.AndroidNotificationPriority.DEFAULT,
       },
-      trigger: {
-        hour: hours,
-        minute: minutes,
-        repeats: true,
-      },
+      trigger: targetDate, // one-off date
     });
-    
-    console.log(`Scheduled evening recap at ${hours}:${minutes.toString().padStart(2, '0')}`);
-    return notificationId;
-    
-  } catch (error) {
-    console.error('Error scheduling evening recap:', error);
+
+    await saveJSON(SS_RECAP_STATE_V1, { dateKey: todayKey, notifId });
+    return notifId;
+  } catch (e) {
+    console.warn('[notify] scheduleEveningRecapIfNeeded error', e);
     return null;
   }
 }
 
-/**
- * Cancel evening recap notification
- */
-export async function cancelEveningRecap(): Promise<void> {
-  try {
-    const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
-    
-    for (const notification of scheduledNotifications) {
-      const data = notification.content.data as NotificationData;
-      if (data?.type === 'evening_recap') {
-        await Notifications.cancelScheduledNotificationAsync(notification.identifier);
-        console.log('Cancelled evening recap notification');
-      }
-    }
-  } catch (error) {
-    console.error('Error cancelling evening recap notification:', error);
-  }
-}
+// ---------------- Optional extras for current app usage ----------------
 
-/**
- * Enable/disable evening recap notifications
- */
 export async function setEveningRecapEnabled(enabled: boolean): Promise<void> {
   try {
-    await AsyncStorage.setItem(EVENING_RECAP_KEY, JSON.stringify(enabled));
-    
-    if (enabled) {
-      await scheduleEveningRecapIfNeeded();
-    } else {
-      await cancelEveningRecap();
+    await AsyncStorage.setItem(SS_RECAP_ENABLED_V1, JSON.stringify(enabled));
+    if (!enabled) {
+      // best-effort: clear any previously scheduled recap for today
+      const s = await loadJSON<RecapState | null>(SS_RECAP_STATE_V1, null);
+      if (s?.notifId) { try { await Notifications.cancelScheduledNotificationAsync(s.notifId); } catch {} }
+      await saveJSON(SS_RECAP_STATE_V1, { dateKey: '' });
     }
-  } catch (error) {
-    console.error('Error setting evening recap enabled:', error);
+  } catch (e) {
+    console.warn('[notify] setEveningRecapEnabled error', e);
   }
 }
 
-/**
- * Check if evening recap is enabled
- */
 export async function isEveningRecapEnabled(): Promise<boolean> {
   try {
-    const enabled = await AsyncStorage.getItem(EVENING_RECAP_KEY);
-    return enabled === 'true';
-  } catch (error) {
-    console.error('Error checking evening recap enabled:', error);
-    return false;
-  }
-}
-
-/**
- * Get habit name from storage (helper function)
- */
-async function getHabitName(habitId: string): Promise<string> {
-  try {
-    const habitsJson = await AsyncStorage.getItem('habits');
-    if (habitsJson) {
-      const habits = JSON.parse(habitsJson);
-      const habit = habits.find((h: any) => h.id === habitId);
-      return habit?.name || 'your habit';
-    }
-    return 'your habit';
-  } catch (error) {
-    console.error('Error getting habit name:', error);
-    return 'your habit';
-  }
-}
-
-/**
- * Configure notification handler
- */
-export function configureNotifications(): void {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    }),
-  });
-}
-
-/**
- * Get all scheduled notifications
- */
-export async function getAllScheduledNotifications(): Promise<Notifications.NotificationRequest[]> {
-  try {
-    return await Notifications.getAllScheduledNotificationsAsync();
-  } catch (error) {
-    console.error('Error getting scheduled notifications:', error);
-    return [];
-  }
-}
-
-/**
- * Clear all scheduled notifications
- */
-export async function clearAllNotifications(): Promise<void> {
-  try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
-    console.log('Cleared all scheduled notifications');
-  } catch (error) {
-    console.error('Error clearing all notifications:', error);
+    const raw = await AsyncStorage.getItem(SS_RECAP_ENABLED_V1);
+    if (raw == null) return true; // default on
+    return raw === 'true' || raw === '"true"';
+  } catch {
+    return true;
   }
 }

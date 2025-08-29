@@ -1,7 +1,7 @@
 // OnboardingScreen for Seventh Sense AI Coach
 // Collects user name, suggests starter habits, and sets default reminder time
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   View, 
   Text, 
@@ -14,25 +14,29 @@ import {
   Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme, useNavigation } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { useHabitsStore } from '../store/habitsStore';
-import { setupPermissions } from '../utils/notify';
+import { setupPermissions, scheduleDaily } from '../utils/notify';
 
 const OnboardingScreen = () => {
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
   const [selectedHabits, setSelectedHabits] = useState(['water', 'walk', 'breathe']);
-  const [reminderTime, setReminderTime] = useState('09:00');
+  const [reminderTime, setReminderTime] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
   
-  const { setName: setUserName, setDefaultReminderTime } = useUser();
-  const { addHabit } = useHabitsStore();
+  const theme = useTheme();
+  const navigation = useNavigation();
+  const { prefs, setName: setUserName, setDefaultReminder, setDefaultReminderTime } = useUser();
+  const addHabit = useHabitsStore(s => s.addHabit);
   
   // Starter habits configuration
   const starterHabits = [
     {
       id: 'water',
-      name: 'Water',
+      name: 'Drink Water 2L',
       icon: 'water-outline',
       type: 'health',
       freq: 'daily',
@@ -41,7 +45,7 @@ const OnboardingScreen = () => {
     },
     {
       id: 'walk',
-      name: 'Walk',
+      name: 'Walk 10m',
       icon: 'footsteps-outline',
       type: 'health',
       freq: 'daily',
@@ -50,7 +54,7 @@ const OnboardingScreen = () => {
     },
     {
       id: 'breathe',
-      name: 'Breathe',
+      name: 'Breathe 2m',
       icon: 'leaf-outline',
       type: 'mind',
       freq: 'daily',
@@ -72,42 +76,66 @@ const OnboardingScreen = () => {
   const handleTimeChange = (newTime) => {
     setReminderTime(newTime);
   };
-  
+
+  const isHHmm = (v) => /^\d{2}:\d{2}$/.test(String(v || ''));
+  const useCurrentTime = () => {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    setReminderTime(`${hh}:${mm}`);
+  };
+
   // Complete onboarding
   const completeOnboarding = async () => {
-    if (!name.trim()) {
-      Alert.alert('Name Required', 'Please enter your name to continue.');
-      return;
-    }
-    
     if (selectedHabits.length === 0) {
-      Alert.alert('Habits Required', 'Please select at least one habit to continue.');
+      setError('Pick at least one to begin.');
       return;
     }
-    
+    if (reminderTime && !isHHmm(reminderTime)) {
+      setError('Enter time as HH:mm (24h).');
+      return;
+    }
+
     try {
       setIsLoading(true);
-      
-      // Request notification permissions
-      await setupPermissions();
+      setError('');
       
       // Save user preferences
-      setUserName(name.trim());
-      setDefaultReminderTime(reminderTime);
-      
-      // Create selected habits
-      const habitsToCreate = starterHabits.filter(habit => 
-        selectedHabits.includes(habit.id)
-      );
-      
-      for (const habit of habitsToCreate) {
-        await addHabit({
-          ...habit,
-          remindAt: reminderTime,
-        });
+      const trimmed = name.trim();
+      if (trimmed) setUserName(trimmed);
+      if (reminderTime) {
+        // support both current + legacy setter
+        if (typeof setDefaultReminder === 'function') setDefaultReminder(reminderTime);
+        else setDefaultReminderTime(reminderTime);
       }
       
-      // Onboarding complete - navigation will automatically move to main app
+      // Create selected habits
+      const habitsToCreate = starterHabits.filter(habit => selectedHabits.includes(habit.id));
+      const created = [];
+      for (const habit of habitsToCreate) {
+        const h = await addHabit({
+          name: habit.name,
+          type: habit.type,
+          freq: 'daily',
+          remindAt: reminderTime || undefined,
+          createdAt: Date.now(),
+        });
+        created.push(h);
+      }
+
+      // Notifications: ask permission first, then schedule per habit
+      if (reminderTime) {
+        const granted = await setupPermissions();
+        if (granted) {
+          const tz = prefs?.timezone;
+          for (const h of created) {
+            try { await scheduleDaily(h.id, reminderTime, tz); } catch {}
+          }
+        }
+      }
+
+      // Navigate to main app (reset stack)
+      navigation.reset({ index: 0, routes: [{ name: 'AppTabs' }] });
       
     } catch (error) {
       console.error('Error completing onboarding:', error);
@@ -124,9 +152,9 @@ const OnboardingScreen = () => {
         return (
           <View style={styles.stepContainer}>
             <View style={styles.stepHeader}>
-              <Text style={styles.stepTitle}>What's your name?</Text>
+              <Text style={styles.stepTitle}>Welcome</Text>
               <Text style={styles.stepSubtitle}>
-                Let's personalize your habit journey
+                What should we call you? (optional)
               </Text>
             </View>
             
@@ -134,7 +162,7 @@ const OnboardingScreen = () => {
               style={styles.nameInput}
               value={name}
               onChangeText={setName}
-              placeholder="Enter your name"
+              placeholder="Your name (optional)"
               placeholderTextColor="#94a3b8"
               autoFocus
               autoCapitalize="words"
@@ -143,9 +171,9 @@ const OnboardingScreen = () => {
             />
             
             <TouchableOpacity
-              style={[styles.nextButton, !name.trim() && styles.nextButtonDisabled]}
+              style={[styles.nextButton]}
               onPress={() => setStep(2)}
-              disabled={!name.trim()}
+              disabled={false}
               accessibilityRole="button"
               accessibilityLabel="Continue to next step"
               accessibilityHint="Move to habit selection step"
@@ -211,6 +239,9 @@ const OnboardingScreen = () => {
                 </TouchableOpacity>
               ))}
             </View>
+            {selectedHabits.length === 0 && (
+              <Text style={styles.inlineError}>Pick at least one to begin.</Text>
+            )}
             
             <View style={styles.stepButtons}>
               <TouchableOpacity
@@ -223,9 +254,12 @@ const OnboardingScreen = () => {
               </TouchableOpacity>
               
               <TouchableOpacity
-                style={[styles.nextButton, selectedHabits.length === 0 && styles.nextButtonDisabled]}
-                onPress={() => setStep(3)}
-                disabled={selectedHabits.length === 0}
+                style={[styles.nextButton]}
+                onPress={() => {
+                  if (selectedHabits.length === 0) { setError('Pick at least one to begin.'); return; }
+                  setStep(3);
+                }}
+                disabled={false}
                 accessibilityRole="button"
                 accessibilityLabel="Continue to next step"
                 accessibilityHint="Move to reminder time setup step"
@@ -241,62 +275,37 @@ const OnboardingScreen = () => {
         return (
           <View style={styles.stepContainer}>
             <View style={styles.stepHeader}>
-              <Text style={styles.stepTitle}>Set your reminder time</Text>
+              <Text style={styles.stepTitle}>Daily reminder</Text>
               <Text style={styles.stepSubtitle}>
-                When would you like to be reminded about your habits?
+                Set a time to get a gentle nudge. Optional.
               </Text>
             </View>
             
             <View style={styles.timeContainer}>
-              <Text style={styles.timeLabel}>Daily reminder at:</Text>
-              
+              <Text style={styles.timeLabel}>Daily reminder at (HH:mm):</Text>
+              <TextInput
+                style={styles.timeInput}
+                value={reminderTime}
+                onChangeText={setReminderTime}
+                placeholder="e.g., 07:30"
+                placeholderTextColor="#94a3b8"
+                keyboardType="number-pad"
+                autoCapitalize="none"
+                accessibilityLabel="Reminder time input"
+                accessibilityHint="Enter time as HH colon mm"
+                maxLength={5}
+              />
               <View style={styles.timePicker}>
-                <TouchableOpacity
-                  style={styles.timeButton}
-                  onPress={() => handleTimeChange('08:00')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Set reminder time to 8:00 AM"
-                >
-                  <Text style={[
-                    styles.timeButtonText,
-                    reminderTime === '08:00' && styles.timeButtonTextSelected
-                  ]}>
-                    8:00 AM
-                  </Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity
-                  style={styles.timeButton}
-                  onPress={() => handleTimeChange('09:00')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Set reminder time to 9:00 AM"
-                >
-                  <Text style={[
-                    styles.timeButtonText,
-                    reminderTime === '09:00' && styles.timeButtonTextSelected
-                  ]}>
-                    9:00 AM
-                  </Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity
-                  style={styles.timeButton}
-                  onPress={() => handleTimeChange('10:00')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Set reminder time to 10:00 AM"
-                >
-                  <Text style={[
-                    styles.timeButtonText,
-                    reminderTime === '10:00' && styles.timeButtonTextSelected
-                  ]}>
-                    10:00 AM
-                  </Text>
+                {['08:00','09:00','18:00'].map(t => (
+                  <TouchableOpacity key={t} style={styles.timeButton} onPress={() => handleTimeChange(t)} accessibilityRole="button" accessibilityLabel={`Set reminder time to ${t}`}>
+                    <Text style={[styles.timeButtonText, reminderTime === t && styles.timeButtonTextSelected]}>{t}</Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity style={styles.timeButton} onPress={useCurrentTime} accessibilityRole="button" accessibilityLabel="Use current time">
+                  <Text style={styles.timeButtonText}>Now</Text>
                 </TouchableOpacity>
               </View>
-              
-              <Text style={styles.timeNote}>
-                You can change this later in settings
-              </Text>
+              {error ? (<Text style={styles.inlineError}>{error}</Text>) : (<Text style={styles.timeNote}>Optional. You can set per-habit later.</Text>)}
             </View>
             
             <View style={styles.stepButtons}>
@@ -316,14 +325,7 @@ const OnboardingScreen = () => {
                 accessibilityRole="button"
                 accessibilityLabel="Complete onboarding and start using the app"
               >
-                {isLoading ? (
-                  <Text style={styles.completeButtonText}>Setting up...</Text>
-                ) : (
-                  <>
-                    <Text style={styles.completeButtonText}>Get Started</Text>
-                    <Ionicons name="rocket" size={20} color="#ffffff" />
-                  </>
-                )}
+                <Text style={styles.completeButtonText}>{isLoading ? 'Setting up…' : 'Finish'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -555,6 +557,20 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 16,
   },
+
+  timeInput: {
+    width: '60%',
+    height: 48,
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#e2e8f0',
+    paddingHorizontal: 12,
+    fontSize: 16,
+    color: '#0f172a',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
   
   timeButton: {
     paddingHorizontal: 20,
@@ -580,6 +596,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#94a3b8',
     textAlign: 'center',
+  },
+
+  inlineError: {
+    fontSize: 12,
+    color: '#ef4444',
+    textAlign: 'center',
+    marginBottom: 8,
   },
   
   stepButtons: {

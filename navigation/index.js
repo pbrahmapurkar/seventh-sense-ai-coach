@@ -1,11 +1,12 @@
-// Navigation for Seventh Sense AI Coach
-// Stack + Tab navigation structure
+// Seventh Sense - Navigation
+// Root stack with onboarding + authenticated tabs. Home stack lives inside tabs.
 
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { Platform } from 'react-native';
+import { useTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 
 // Screens
 import OnboardingScreen from '../screens/OnboardingScreen';
@@ -15,137 +16,188 @@ import HabitDetailScreen from '../screens/HabitDetailScreen';
 import InsightsScreen from '../screens/InsightsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
-// Context
+// User context
 import { useUser } from '../context/UserContext';
 
-// Create navigators
-const Stack = createNativeStackNavigator();
-const Tab = createBottomTabNavigator();
+// Route name constants
+export const ROUTES = {
+  ONBOARDING_STACK: 'Onboarding',
+  APP_TABS: 'AppTabs',
+  HOME: 'Home',
+  ADD_HABIT: 'AddHabit',
+  HABIT_DETAIL: 'HabitDetail',
+  TAB_HOME: 'TabHome',
+  TAB_INSIGHTS: 'TabInsights',
+  TAB_SETTINGS: 'TabSettings',
+};
 
-// Tab Navigator
-const TabNavigator = () => {
+/**
+ * @typedef {Object} HomeStackParamList
+ * @property {undefined} Home
+ * @property {{ prefillName?: string } | undefined} AddHabit
+ * @property {{ id: string }} HabitDetail
+ */
+
+/**
+ * @typedef {Object} TabsParamList
+ * @property {undefined} TabHome
+ * @property {undefined} TabInsights
+ * @property {undefined} TabSettings
+ */
+
+/**
+ * @typedef {Object} RootStackParamList
+ * @property {undefined} Onboarding
+ * @property {undefined} AppTabs
+ */
+
+const RootStack = createNativeStackNavigator();
+const HomeStack = createNativeStackNavigator();
+const Tabs = createBottomTabNavigator();
+
+// Home stack navigator
+function HomeStackNavigator() {
+  const theme = useTheme();
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused, color, size }) => {
-          let iconName;
-
-          if (route.name === 'Home') {
-            iconName = focused ? 'home' : 'home-outline';
-          } else if (route.name === 'Insights') {
-            iconName = focused ? 'analytics' : 'analytics-outline';
-          } else if (route.name === 'Settings') {
-            iconName = focused ? 'settings' : 'settings-outline';
-          }
-
-          return <Ionicons name={iconName} size={size} color={color} />;
-        },
-        tabBarActiveTintColor: '#6366f1', // Primary color
-        tabBarInactiveTintColor: '#64748b', // Text tertiary
-        tabBarStyle: {
-          backgroundColor: '#ffffff',
-          borderTopColor: '#e2e8f0',
-          paddingBottom: 5,
-          paddingTop: 5,
-          height: 60,
-        },
-        tabBarLabelStyle: {
-          fontSize: 12,
-          fontWeight: '500',
-        },
-        headerShown: false,
-      })}
+    <HomeStack.Navigator
+      screenOptions={{
+        headerTitleAlign: 'center',
+        headerTintColor: theme.colors.text,
+        headerStyle: { backgroundColor: theme.colors.card || theme.colors.background },
+        headerShadowVisible: false,
+        headerTitleStyle: { fontWeight: '600' },
+      }}
     >
-      <Tab.Screen 
-        name="Home" 
+      <HomeStack.Screen
+        name={ROUTES.HOME}
         component={HomeScreen}
         options={{
-          title: 'Today',
+          title: 'Seventh Sense',
+          headerLargeTitle: Platform.OS === 'ios',
+          headerBackVisible: false,
         }}
       />
-      <Tab.Screen 
-        name="Insights" 
+      <HomeStack.Screen
+        name={ROUTES.ADD_HABIT}
+        component={AddHabitScreen}
+        options={{ title: 'Add Habit' }}
+      />
+      <HomeStack.Screen
+        name={ROUTES.HABIT_DETAIL}
+        component={HabitDetailScreen}
+        options={{ title: 'Habit' }}
+      />
+    </HomeStack.Navigator>
+  );
+}
+
+// Tabs navigator
+function AppTabsNavigator() {
+  const theme = useTheme();
+  const active = theme.colors.primary;
+  const inactive = `${theme.colors.text}99`; // ~60% opacity hex suffix
+  const tabBg = theme.colors.card || theme.colors.background;
+
+  return (
+    <Tabs.Navigator
+      screenOptions={({ route }) => ({
+        headerTitleAlign: 'center',
+        headerTintColor: theme.colors.text,
+        headerStyle: { backgroundColor: theme.colors.card || theme.colors.background },
+        headerShadowVisible: false,
+        tabBarActiveTintColor: active,
+        tabBarInactiveTintColor: inactive,
+        tabBarStyle: { backgroundColor: tabBg },
+        tabBarLabelStyle: { includeFontPadding: false },
+        tabBarIcon: ({ color, size }) => {
+          let name = 'home';
+          switch (route.name) {
+            case ROUTES.TAB_HOME:
+              name = 'home';
+              break;
+            case ROUTES.TAB_INSIGHTS:
+              name = 'bar-chart-2';
+              break;
+            case ROUTES.TAB_SETTINGS:
+              name = 'settings';
+              break;
+          }
+          return <Feather name={name} size={size} color={color} />;
+        },
+      })}
+    >
+      <Tabs.Screen
+        name={ROUTES.TAB_HOME}
+        component={HomeStackNavigator}
+        options={{
+          title: 'Home',
+          tabBarAccessibilityLabel: 'Home tab',
+        }}
+      />
+      <Tabs.Screen
+        name={ROUTES.TAB_INSIGHTS}
         component={InsightsScreen}
         options={{
           title: 'Insights',
+          tabBarAccessibilityLabel: 'Insights tab',
         }}
       />
-      <Tab.Screen 
-        name="Settings" 
+      <Tabs.Screen
+        name={ROUTES.TAB_SETTINGS}
         component={SettingsScreen}
         options={{
           title: 'Settings',
+          tabBarAccessibilityLabel: 'Settings tab',
         }}
       />
-    </Tab.Navigator>
+    </Tabs.Navigator>
   );
+}
+
+// Linking configuration (optional)
+export const linking = {
+  prefixes: ['seventh-sense://', 'https://seventhsense.app'],
+  config: {
+    screens: {
+      [ROUTES.APP_TABS]: {
+        screens: {
+          [ROUTES.TAB_HOME]: {
+            screens: {
+              [ROUTES.HOME]: 'home',
+              [ROUTES.HABIT_DETAIL]: 'habit/:id',
+            },
+          },
+          [ROUTES.TAB_INSIGHTS]: 'insights',
+          [ROUTES.TAB_SETTINGS]: 'settings',
+        },
+      },
+      [ROUTES.ONBOARDING_STACK]: 'onboarding',
+    },
+  },
 };
 
-// Main Stack Navigator
-const MainStack = () => {
+// Root app navigator
+function AppNavigator() {
   const { prefs, isHydrated } = useUser();
-
-  // Show onboarding if no name is set and app is hydrated
-  const showOnboarding = isHydrated && !prefs.name;
+  const hasCompletedOnboarding = Boolean(prefs?.name);
 
   return (
-    <Stack.Navigator
-      screenOptions={{
-        headerStyle: {
-          backgroundColor: '#ffffff',
-        },
-        headerTintColor: '#0f172a',
-        headerTitleStyle: {
-          fontWeight: '600',
-        },
-        headerShadowVisible: false,
-      }}
-    >
-      {showOnboarding ? (
-        <Stack.Screen
-          name="Onboarding"
+    <RootStack.Navigator screenOptions={{ headerTitleAlign: 'center' }}>
+      {!hasCompletedOnboarding ? (
+        <RootStack.Screen
+          name={ROUTES.ONBOARDING_STACK}
           component={OnboardingScreen}
-          options={{
-            headerShown: false,
-          }}
+          options={{ headerShown: false }}
         />
       ) : (
-        <>
-          <Stack.Screen
-            name="MainTabs"
-            component={TabNavigator}
-            options={{
-              headerShown: false,
-            }}
-          />
-          <Stack.Screen
-            name="AddHabit"
-            component={AddHabitScreen}
-            options={{
-              title: 'Add Habit',
-              presentation: 'modal',
-            }}
-          />
-          <Stack.Screen
-            name="HabitDetail"
-            component={HabitDetailScreen}
-            options={({ route }) => ({
-              title: route.params?.habitName || 'Habit Details',
-            })}
-          />
-        </>
+        <RootStack.Screen
+          name={ROUTES.APP_TABS}
+          component={AppTabsNavigator}
+          options={{ headerShown: false }}
+        />
       )}
-    </Stack.Navigator>
+    </RootStack.Navigator>
   );
-};
+}
 
-// Root Navigation Container
-const Navigation = () => {
-  return (
-    <NavigationContainer>
-      <MainStack />
-    </NavigationContainer>
-  );
-};
-
-export default Navigation;
+export default AppNavigator;

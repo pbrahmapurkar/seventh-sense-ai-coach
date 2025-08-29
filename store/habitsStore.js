@@ -1,304 +1,290 @@
-// Habits store using Zustand for Seventh Sense AI Coach
+// Seventh Sense - Zustand Habits Store (local-first)
+// - Habits + Logs with throttled persistence and safe hydration
+
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getTodayKey, computeStreak } from '../utils/date';
-import { scheduleDaily, cancelScheduled } from '../utils/notify';
+import { cancelScheduled } from '../utils/notify';
 
-// Data models
-export const Habit = {
-  id: '',
-  name: '',
-  icon: '',
-  type: 'health', // 'health' | 'mind' | 'custom'
-  freq: 'daily', // 'daily' | 'weekly' | 'custom'
-  targetPerWeek: 7,
-  remindAt: '', // "HH:mm"
-  createdAt: 0,
-  archived: false,
-};
+let dateUtils;
+try {
+  // utils/date.ts exports computeStreak in this project
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  dateUtils = require('../utils/date');
+} catch (e) {
+  dateUtils = {};
+}
+const computeStreakExternal = dateUtils?.computeStreak;
 
-export const Log = {
-  id: '',
-  habitId: '',
-  date: '', // "YYYY-MM-DD"
-  completed: false,
-  note: '',
-  createdAt: 0,
-};
+const STORAGE_KEY = 'SS_STORE_V1';
+const LEGACY_KEYS = ['habits', 'logs'];
+const LATEST_VERSION = 1;
 
-// Store state
-const initialState = {
-  habits: [],
-  logs: [],
-  isLoading: false,
-  isHydrated: false,
-};
+function genId() {
+  const rand = Math.floor(Math.random() * 1e6).toString(36);
+  return Date.now().toString(36) + rand;
+}
 
-// Store actions and selectors
-export const useHabitsStore = create((set, get) => ({
-  ...initialState,
-
-  // Actions
-  setHabits: (habits) => set({ habits }),
-  setLogs: (logs) => set({ logs }),
-  setLoading: (isLoading) => set({ isLoading }),
-  setHydrated: (isHydrated) => set({ isHydrated }),
-
-  // Add a new habit
-  addHabit: async (habit) => {
-    const newHabit = {
-      ...habit,
-      id: generateId(),
-      createdAt: Date.now(),
+function throttle(fn, delay = 500) {
+  let last = 0,
+    timer = null,
+    lastArgs = null;
+  const throttled = (...args) => {
+    const now = Date.now();
+    lastArgs = args;
+    const invoke = () => {
+      last = now;
+      timer = null;
+      fn(...(lastArgs || []));
     };
-
-    set((state) => ({
-      habits: [...state.habits, newHabit],
-    }));
-
-    // Schedule notification if reminder time is set
-    if (habit.remindAt) {
-      await scheduleDaily(newHabit.id, habit.remindAt);
+    if (now - last >= delay) {
+      invoke();
+    } else if (!timer) {
+      timer = setTimeout(invoke, delay - (now - last));
     }
-
-    // Persist to storage
-    await persistStore();
-    
-    return newHabit;
-  },
-
-  // Update an existing habit
-  updateHabit: async (id, updates) => {
-    const state = get();
-    const habitIndex = state.habits.findIndex(h => h.id === id);
-    
-    if (habitIndex === -1) return null;
-
-    const oldHabit = state.habits[habitIndex];
-    const updatedHabit = { ...oldHabit, ...updates };
-
-    // Handle notification changes
-    if (updates.remindAt !== undefined) {
-      if (updates.remindAt) {
-        // Cancel old notification and schedule new one
-        await cancelScheduled(id);
-        await scheduleDaily(id, updates.remindAt);
-      } else {
-        // Cancel notification if reminder was removed
-        await cancelScheduled(id);
-      }
+  };
+  throttled.flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+      fn(...(lastArgs || []));
     }
+  };
+  return throttled;
+}
 
-    set((state) => ({
-      habits: state.habits.map(h => h.id === id ? updatedHabit : h),
-    }));
+function initialState() {
+  return {
+    habits: [],
+    logs: [],
+    version: LATEST_VERSION,
+    _hydrated: false,
+    isHydrated: false, // for backward compatibility
+  };
+}
 
-    // Persist to storage
-    await persistStore();
-    
-    return updatedHabit;
-  },
+// Fallback streak calculation if utils/date.computeStreak is unavailable
+function fallbackComputeStreak(logsForHabit = []) {
+  const completedDates = Array.from(
+    new Set(
+      logsForHabit
+        .filter((l) => l.completed)
+        .map((l) => l.date)
+        .filter(Boolean)
+    )
+  ).sort(); // ascending
 
-  // Archive a habit (soft delete)
-  archiveHabit: async (id) => {
-    set((state) => ({
-      habits: state.habits.map(h => 
-        h.id === id ? { ...h, archived: true } : h
-      ),
-    }));
+  if (completedDates.length === 0) return { current: 0, longest: 0 };
 
-    // Persist to storage
-    await persistStore();
-  },
+  const addOneDay = (key) => {
+    const d = new Date(key);
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().split('T')[0];
+  };
 
-  // Delete a habit completely
-  deleteHabit: async (id) => {
-    // Cancel any scheduled notifications
-    await cancelScheduled(id);
-
-    // Remove habit and all its logs
-    set((state) => ({
-      habits: state.habits.filter(h => h.id !== id),
-      logs: state.logs.filter(l => l.habitId !== id),
-    }));
-
-    // Persist to storage
-    await persistStore();
-  },
-
-  // Toggle habit completion for a specific date
-  toggleCompletion: async (habitId, dateKey) => {
-    const state = get();
-    const existingLog = state.logs.find(
-      l => l.habitId === habitId && l.date === dateKey
-    );
-
-    if (existingLog) {
-      // Remove existing log
-      set((state) => ({
-        logs: state.logs.filter(l => l.id !== existingLog.id),
-      }));
+  // Longest streak
+  let longest = 1;
+  let currentSeq = 1;
+  for (let i = 1; i < completedDates.length; i++) {
+    if (completedDates[i] === addOneDay(completedDates[i - 1])) {
+      currentSeq += 1;
+      longest = Math.max(longest, currentSeq);
     } else {
-      // Create new log
-      const newLog = {
-        id: generateId(),
-        habitId,
-        date: dateKey,
-        completed: true,
-        createdAt: Date.now(),
+      currentSeq = 1;
+    }
+  }
+
+  // Current streak: walk from latest backwards
+  let current = 1;
+  for (let i = completedDates.length - 1; i > 0; i--) {
+    if (completedDates[i] === addOneDay(completedDates[i - 1])) {
+      current += 1;
+    } else {
+      break;
+    }
+  }
+
+  return { current, longest };
+}
+
+export const useHabitsStore = create((set, get) => {
+  // Throttled saver (captures get())
+  const saveThrottled = throttle(async () => {
+    try {
+      const { habits, logs } = get();
+      const payload = JSON.stringify({ habits, logs, version: LATEST_VERSION });
+      await AsyncStorage.setItem(STORAGE_KEY, payload);
+    } catch (e) {
+      console.warn('Store save failed:', e?.message || e);
+    }
+  }, 500);
+
+  return {
+    ...initialState(),
+
+    // Internal force save (exposed for tests or manual flush)
+    _saveNow: async () => {
+      try {
+        const { habits, logs } = get();
+        const payload = JSON.stringify({ habits, logs, version: LATEST_VERSION });
+        await AsyncStorage.setItem(STORAGE_KEY, payload);
+      } catch (e) {
+        console.warn('Store immediate save failed:', e?.message || e);
+      }
+    },
+
+    // Public: hydrate from storage (safe against corrupt data)
+    hydrateFromStorage: async () => {
+      try {
+        const json = await AsyncStorage.getItem(STORAGE_KEY);
+        if (json) {
+          try {
+            const parsed = JSON.parse(json);
+            const habits = Array.isArray(parsed?.habits) ? parsed.habits : [];
+            const logs = Array.isArray(parsed?.logs) ? parsed.logs : [];
+            set({ habits, logs, version: LATEST_VERSION, _hydrated: true, isHydrated: true });
+            return;
+          } catch (e) {
+            console.warn('Store parse failed, trying legacy keys');
+          }
+        }
+        // Legacy migration path
+        const [habitsJson, logsJson] = await Promise.all([
+          AsyncStorage.getItem(LEGACY_KEYS[0]),
+          AsyncStorage.getItem(LEGACY_KEYS[1]),
+        ]);
+        const habits = habitsJson ? JSON.parse(habitsJson) : [];
+        const logs = logsJson ? JSON.parse(logsJson) : [];
+        set({ habits: Array.isArray(habits) ? habits : [], logs: Array.isArray(logs) ? logs : [], version: LATEST_VERSION, _hydrated: true, isHydrated: true });
+        // Save migrated payload to new key (fire-and-forget)
+        get()._saveNow?.();
+      } catch (e) {
+        console.warn('Store hydration failed:', e?.message || e);
+        set({ ...initialState(), _hydrated: true, isHydrated: true });
+      }
+    },
+
+    // Backward-compat alias used elsewhere
+    hydrate: async () => {
+      await get().hydrateFromStorage();
+    },
+
+    // Core state setters used by Settings import/export
+    setHabits: (habits) => {
+      set({ habits: Array.isArray(habits) ? habits : [] });
+      saveThrottled();
+    },
+    setLogs: (logs) => {
+      set({ logs: Array.isArray(logs) ? logs : [] });
+      saveThrottled();
+    },
+
+    // Mutations
+    addHabit: (habit) => {
+      const newHabit = {
+        id: habit?.id || genId(),
+        name: habit?.name || 'Habit',
+        type: habit?.type || 'health',
+        freq: habit?.freq || 'daily',
+        targetPerWeek: habit?.targetPerWeek ?? 7,
+        remindAt: habit?.remindAt,
+        createdAt: habit?.createdAt || Date.now(),
+        archived: !!habit?.archived,
+        icon: habit?.icon,
       };
+      set((state) => ({ habits: [...state.habits, newHabit] }));
+      saveThrottled();
+      return newHabit;
+    },
 
+    updateHabit: (id, patch) => {
       set((state) => ({
-        logs: [...state.logs, newLog],
+        habits: state.habits.map((h) => (h.id === id ? { ...h, ...patch } : h)),
       }));
-    }
+      saveThrottled();
+    },
 
-    // Persist to storage
-    await persistStore();
-  },
+    archiveHabit: (id) => {
+      set((state) => ({
+        habits: state.habits.map((h) => (h.id === id ? { ...h, archived: true } : h)),
+      }));
+      saveThrottled();
+    },
 
-  // Get habits for today based on frequency rules
-  getTodayHabits: (dateKey = getTodayKey()) => {
-    const state = get();
-    const today = dateKey || getTodayKey();
-    
-    return state.habits
-      .filter(habit => !habit.archived)
-      .filter(habit => {
-        if (habit.freq === 'daily') return true;
-        if (habit.freq === 'weekly') {
-          // For weekly habits, show on specific days
-          const dayOfWeek = new Date(today).getDay();
-          // Simple logic: show on Monday, Wednesday, Friday
-          return [1, 3, 5].includes(dayOfWeek);
-        }
-        if (habit.freq === 'custom') {
-          // For custom frequency, show based on target per week
-          const logs = state.logs.filter(l => l.habitId === habit.id);
-          const thisWeekLogs = logs.filter(l => {
-            const logDate = new Date(l.date);
-            const todayDate = new Date(today);
-            const diffTime = todayDate.getTime() - logDate.getTime();
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            return diffDays <= 7 && diffDays >= 0;
-          });
-          return thisWeekLogs.length < (habit.targetPerWeek || 3);
-        }
-        return false;
-      });
-  },
+    deleteHabit: async (id) => {
+      // Cancel scheduled notifications (best effort)
+      try { await cancelScheduled(id); } catch {}
+      set((state) => ({
+        habits: state.habits.filter((h) => h.id !== id),
+        logs: state.logs.filter((l) => l.habitId !== id),
+      }));
+      await get()._saveNow();
+    },
 
-  // Get logs for a specific habit
-  getHabitLogs: (habitId, days = 30) => {
-    const state = get();
-    const today = getTodayKey();
-    const cutoffDate = new Date(today);
-    cutoffDate.setDate(cutoffDate.getDate() - days);
+    toggleCompletion: (habitId, dateKey) => {
+      const { logs } = get();
+      const existing = logs.find((l) => l.habitId === habitId && l.date === dateKey && l.completed);
+      if (existing) {
+        set({ logs: logs.filter((l) => !(l.habitId === habitId && l.date === dateKey && l.completed)) });
+      } else {
+        const newLog = {
+          id: genId(),
+          habitId,
+          date: dateKey,
+          completed: true,
+          createdAt: Date.now(),
+        };
+        set({ logs: [...logs.filter((l) => !(l.habitId === habitId && l.date === dateKey)), newLog] });
+      }
+      saveThrottled();
+    },
 
-    return state.logs
-      .filter(l => l.habitId === habitId)
-      .filter(l => new Date(l.date) >= cutoffDate)
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  },
+    // Selectors
+    getTodayHabits: (dateKey) => {
+      // For MVP: include all non-archived habits regardless of freq
+      const { habits } = get();
+      return habits.filter((h) => !h.archived);
+    },
 
-  // Get streak data for a habit
-  getStreak: (habitId) => {
-    const state = get();
-    const logs = state.logs.filter(l => l.habitId === habitId && l.completed);
-    return computeStreak(logs);
-  },
+    getHabitLogs: (habitId) => {
+      const { logs } = get();
+      return logs
+        .filter((l) => l.habitId === habitId)
+        .sort((a, b) => {
+          if (a.date === b.date) return (b.createdAt || 0) - (a.createdAt || 0);
+          return a.date < b.date ? 1 : -1; // newer date first
+        });
+    },
 
-  // Get completion status for a habit on a specific date
-  isCompletedOnDate: (habitId, dateKey) => {
-    const state = get();
-    return state.logs.some(
-      l => l.habitId === habitId && l.date === dateKey && l.completed
-    );
-  },
+    isCompletedOnDate: (habitId, dateKey) => {
+      const { logs } = get();
+      return logs.some((l) => l.habitId === habitId && l.date === dateKey && l.completed);
+    },
 
-  // Get overall completion percentage for a date range
-  getCompletionPercentage: (startDate, endDate) => {
-    const state = get();
-    const habits = state.habits.filter(h => !h.archived && h.freq === 'daily');
-    
-    if (habits.length === 0) return 0;
+    getStreak: (habitId) => {
+      const { logs } = get();
+      const forHabit = logs.filter((l) => l.habitId === habitId && l.completed);
+      if (typeof computeStreakExternal === 'function') {
+        try {
+          return computeStreakExternal(forHabit);
+        } catch {}
+      }
+      return fallbackComputeStreak(forHabit);
+    },
 
-    let totalCompletions = 0;
-    let totalOpportunities = 0;
+    // Dev helpers
+    wipeAll: async () => {
+      set({ ...initialState(), _hydrated: true, isHydrated: true });
+      try { await AsyncStorage.removeItem(STORAGE_KEY); } catch {}
+    },
+    reset: async () => {
+      await get().wipeAll();
+    },
+  };
+});
 
-    habits.forEach(habit => {
-      const logs = state.logs.filter(
-        l => l.habitId === habit.id && 
-             l.date >= startDate && 
-             l.date <= endDate
-      );
-      const completed = logs.filter(l => l.completed).length;
-      totalCompletions += completed;
-      totalOpportunities += 1; // One opportunity per day for daily habits
-    });
-
-    return totalOpportunities > 0 ? (totalCompletions / totalOpportunities) * 100 : 0;
-  },
-
-  // Hydrate store from AsyncStorage
-  hydrate: async () => {
-    try {
-      set({ isLoading: true });
-      
-      const [habitsJson, logsJson] = await Promise.all([
-        AsyncStorage.getItem('habits'),
-        AsyncStorage.getItem('logs'),
-      ]);
-
-      const habits = habitsJson ? JSON.parse(habitsJson) : [];
-      const logs = logsJson ? JSON.parse(logsJson) : [];
-
-      set({ habits, logs, isHydrated: true });
-      
-      console.log('Store hydrated:', { habits: habits.length, logs: logs.length });
-    } catch (error) {
-      console.error('Error hydrating store:', error);
-      set({ isHydrated: true }); // Mark as hydrated even on error
-    } finally {
-      set({ isLoading: false });
-    }
-  },
-
-  // Reset store to initial state
-  reset: () => {
-    set(initialState);
-    AsyncStorage.multiRemove(['habits', 'logs']);
-  },
-}));
-
-// Persistence helpers
-let persistTimeout;
-const persistStore = async () => {
-  // Debounce persistence to avoid excessive writes
-  clearTimeout(persistTimeout);
-  persistTimeout = setTimeout(async () => {
-    try {
-      const state = useHabitsStore.getState();
-      await Promise.all([
-        AsyncStorage.setItem('habits', JSON.stringify(state.habits)),
-        AsyncStorage.setItem('logs', JSON.stringify(state.logs)),
-      ]);
-    } catch (error) {
-      console.error('Error persisting store:', error);
-    }
-  }, 1000);
-};
-
-// Utility function to generate unique IDs
-const generateId = () => {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2);
-};
-
-// Export selectors for convenience
+// Optional convenience selectors
 export const selectors = {
   getTodayHabits: (dateKey) => useHabitsStore.getState().getTodayHabits(dateKey),
-  getHabitLogs: (habitId, days) => useHabitsStore.getState().getHabitLogs(habitId, days),
+  getHabitLogs: (habitId) => useHabitsStore.getState().getHabitLogs(habitId),
   getStreak: (habitId) => useHabitsStore.getState().getStreak(habitId),
-  isCompletedOnDate: (habitId, dateKey) => useHabitsStore.getState().isCompletedOnDate(habitId, dateKey),
-  getCompletionPercentage: (startDate, endDate) => useHabitsStore.getState().getCompletionPercentage(startDate, endDate),
 };
