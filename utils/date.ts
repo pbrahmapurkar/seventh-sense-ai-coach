@@ -1,213 +1,205 @@
-// Date utilities for Seventh Sense AI Coach
+// Seventh Sense - TZ-aware date utilities (no external deps)
+
+export type DateKey = string; // "YYYY-MM-DD"
+export type TZ = string; // IANA timezone
+
+export type LogLike = {
+  date: DateKey;
+  completed: boolean;
+};
 
 export interface StreakData {
   current: number;
   longest: number;
 }
 
-export interface Log {
-  id: string;
-  habitId: string;
-  date: string; // "YYYY-MM-DD"
-  completed: boolean;
-  note?: string;
-  createdAt: number;
-}
+// ----------------------------
+// Internal helpers
+// ----------------------------
 
-/**
- * Get today's date key in YYYY-MM-DD format
- */
-export function getTodayKey(timezone?: string): string {
-  const now = new Date();
-  if (timezone) {
-    // For now, use local timezone. In production, you'd use a proper timezone library
-    return now.toISOString().split('T')[0];
+function safeTZ(tz?: string): string {
+  try {
+    const fromIntl = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz && typeof tz === 'string' && tz.length > 0 ? tz : fromIntl || 'UTC';
+  } catch {
+    return tz || 'UTC';
   }
-  return now.toISOString().split('T')[0];
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+function formatKeyFromYMD(y: number, m: number, d: number): DateKey {
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+// Extract local Y/M/D in the requested timezone using Intl API.
+function getLocalYMDInTZ(date: Date, tz: string): { y: number; m: number; d: number } {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+
+  // Using formatToParts to avoid string parsing edge cases
+  const parts = fmt.formatToParts(date);
+  const y = Number(parts.find((p) => p.type === 'year')?.value);
+  const m = Number(parts.find((p) => p.type === 'month')?.value);
+  const d = Number(parts.find((p) => p.type === 'day')?.value);
+  return { y, m, d };
+}
+
+// Convert a YYYY-MM-DD key to a UTC Date at 00:00 for that local day.
+// We always operate at UTC midnight and re-derive local YMD via Intl after arithmetic.
+function dateKeyToDateAtStartOfDay(key: DateKey, tz: string): Date {
+  const [y, m, d] = key.split('-').map((x) => Number(x));
+  // Constructing UTC midnight for the local date prevents DST issues when adding days.
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 0, 0, 0, 0));
+}
+
+// ----------------------------
+// Exports
+// ----------------------------
+
+/**
+ * Get today's date key in YYYY-MM-DD for the given timezone.
+ * Example: getTodayKey('Asia/Kolkata') → '2025-08-29'
+ */
+export function getTodayKey(tz: string): DateKey {
+  const zone = safeTZ(tz);
+  const { y, m, d } = getLocalYMDInTZ(new Date(), zone);
+  return formatKeyFromYMD(y, m, d);
 }
 
 /**
- * Check if two date keys represent the same day
+ * Check if two date keys represent the same local day in the given timezone.
+ * Accepts already-normalized YYYY-MM-DD strings.
  */
-export function isSameDay(a: string, b: string, timezone?: string): boolean {
-  return a === b;
+export function isSameDay(a: DateKey, b: DateKey, tz: string): boolean {
+  if (a === b) return true;
+  // Normalize by parsing and formatting back, to tolerate minor inconsistencies.
+  const zone = safeTZ(tz);
+  const da = dateKeyToDateAtStartOfDay(a, zone);
+  const db = dateKeyToDateAtStartOfDay(b, zone);
+  const ak = formatKeyFromYMD(...Object.values(getLocalYMDInTZ(da, zone)) as any);
+  const bk = formatKeyFromYMD(...Object.values(getLocalYMDInTZ(db, zone)) as any);
+  return ak === bk;
 }
 
 /**
- * Add n days to a date key
+ * Add n days (can be negative) to a date key in the provided timezone.
+ * Uses UTC midnight arithmetic to avoid DST pitfalls.
+ * Example: addDays('2025-03-09', 1, 'America/Los_Angeles') → '2025-03-10'
  */
-export function addDays(dateKey: string, n: number): string {
-  const date = new Date(dateKey);
-  date.setDate(date.getDate() + n);
-  return date.toISOString().split('T')[0];
+export function addDays(key: DateKey, n: number, tz?: string): DateKey {
+  const zone = safeTZ(tz);
+  const base = dateKeyToDateAtStartOfDay(key, zone);
+  const next = new Date(base.getTime() + n * 24 * 60 * 60 * 1000);
+  const { y, m, d } = getLocalYMDInTZ(next, zone);
+  return formatKeyFromYMD(y, m, d);
 }
 
 /**
- * Get the last n days as date keys
+ * Return the last n days as date keys, newest → oldest, inclusive of today.
+ * Example (n=3): ['2025-08-29','2025-08-28','2025-08-27']
  */
-export function lastNDays(n: number, timezone?: string): string[] {
-  const today = new Date();
-  const dates: string[] = [];
-  
-  for (let i = n - 1; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
-    dates.push(date.toISOString().split('T')[0]);
+export function lastNDays(n: number, tz: string): DateKey[] {
+  const zone = safeTZ(tz);
+  const out: DateKey[] = [];
+  let cur = getTodayKey(zone);
+  out.push(cur);
+  for (let i = 1; i < Math.max(1, n); i++) {
+    cur = addDays(cur, -1, zone);
+    out.push(cur);
   }
-  
-  return dates;
+  return out; // newest → oldest
 }
 
 /**
- * Get weekday name from date key
+ * Get weekday number for a date key. Sunday = 0, Monday = 1, ... Saturday = 6.
  */
-export function getWeekday(dateKey: string): string {
-  const date = new Date(dateKey);
-  return date.toLocaleDateString('en-US', { weekday: 'long' });
+export function getWeekday(key: DateKey, tz: string): number {
+  const zone = safeTZ(tz);
+  const [y, m, d] = key.split('-').map((x) => Number(x));
+  // Day-of-week depends only on Y/M/D in Gregorian, so UTC is fine here.
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  return dt.getUTCDay(); // 0..6, Sun=0
 }
 
 /**
- * Get short weekday name from date key
+ * Compute streak data from logs. Only counts unique days with completed=true.
+ * current: length of the trailing consecutive run ending TODAY in tz; otherwise 0.
  */
-export function getShortWeekday(dateKey: string): string {
-  const date = new Date(dateKey);
-  return date.toLocaleDateString('en-US', { weekday: 'short' });
-}
+export function computeStreak(logs: LogLike[], tz: string): StreakData {
+  const zone = safeTZ(tz);
+  if (!Array.isArray(logs) || logs.length === 0) return { current: 0, longest: 0 };
 
-/**
- * Compute streak data from logs
- */
-export function computeStreak(logs: Log[], timezone?: string): StreakData {
-  if (logs.length === 0) {
-    return { current: 0, longest: 0 };
+  // Unique completed dates
+  const unique = new Set<string>();
+  for (const l of logs) {
+    if (l && l.completed && typeof l.date === 'string') unique.add(l.date);
   }
+  const dates = Array.from(unique).sort(); // ascending (oldest → newest)
+  if (dates.length === 0) return { current: 0, longest: 0 };
 
-  // Sort logs by date (newest first)
-  const sortedLogs = logs
-    .filter(log => log.completed)
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-  if (sortedLogs.length === 0) {
-    return { current: 0, longest: 0 };
-  }
-
-  const today = getTodayKey(timezone);
-  let currentStreak = 0;
-  let longestStreak = 0;
-  let tempStreak = 0;
-
-  // Check current streak from today backwards
-  let currentDate = today;
-  for (const log of sortedLogs) {
-    if (log.date === currentDate) {
-      currentStreak++;
-      tempStreak++;
-      currentDate = addDays(currentDate, -1);
-    } else if (log.date === addDays(currentDate, -1)) {
-      tempStreak++;
-      currentDate = addDays(currentDate, -1);
+  // Compute longest chain of consecutive days
+  let longest = 1;
+  let run = 1;
+  for (let i = 1; i < dates.length; i++) {
+    const prevNext = addDays(dates[i - 1], 1, zone);
+    if (dates[i] === prevNext) {
+      run += 1;
+      if (run > longest) longest = run;
     } else {
-      break;
+      run = 1;
     }
   }
 
-  // Calculate longest streak
-  let lastDate: string | null = null;
-  for (const log of sortedLogs) {
-    if (lastDate === null) {
-      tempStreak = 1;
-      lastDate = log.date;
-    } else if (log.date === addDays(lastDate, -1)) {
-      tempStreak++;
-      lastDate = log.date;
-    } else {
-      longestStreak = Math.max(longestStreak, tempStreak);
-      tempStreak = 1;
-      lastDate = log.date;
+  // Current streak: only if the last completed day is today in tz
+  const today = getTodayKey(zone);
+  const last = dates[dates.length - 1];
+  let current = 0;
+  if (last === today) {
+    // Walk backwards from end while consecutive
+    current = 1;
+    let cursor = last;
+    for (let i = dates.length - 2; i >= 0; i--) {
+      const prev = addDays(cursor, -1, zone);
+      if (dates[i] === prev) {
+        current += 1;
+        cursor = prev;
+      } else {
+        break;
+      }
     }
+  } else {
+    current = 0; // per MVP rule
   }
-  longestStreak = Math.max(longestStreak, tempStreak);
 
-  return { current: currentStreak, longest: longestStreak };
+  return { current, longest };
 }
 
 /**
- * Get dates for a specific frequency
+ * Minimal frequency helper for whether a habit should show today.
+ * - daily  → true
+ * - weekly → true (MVP; refine later for chosen weekdays)
+ * - custom → true if targetPerWeek provided; otherwise true (MVP)
  */
 export function datesForFrequency(
-  frequency: 'daily' | 'weekly' | 'custom',
+  freq: 'daily' | 'weekly' | 'custom',
   targetPerWeek?: number,
-  startDate?: string
-): string[] {
-  const start = startDate || getTodayKey();
-  const dates: string[] = [];
-  
-  if (frequency === 'daily') {
-    // Return next 7 days
-    for (let i = 0; i < 7; i++) {
-      dates.push(addDays(start, i));
-    }
-  } else if (frequency === 'weekly') {
-    // Return next 4 weeks (assuming weekly target)
-    for (let i = 0; i < 28; i += 7) {
-      dates.push(addDays(start, i));
-    }
-  } else if (frequency === 'custom' && targetPerWeek) {
-    // For custom frequency, return dates based on target per week
-    // This is a simplified implementation
-    const daysPerWeek = Math.ceil(7 / targetPerWeek);
-    for (let i = 0; i < 7; i += daysPerWeek) {
-      dates.push(addDays(start, i));
-    }
-  }
-  
-  return dates;
-}
-
-/**
- * Check if a date is today
- */
-export function isToday(dateKey: string): boolean {
-  return dateKey === getTodayKey();
-}
-
-/**
- * Check if a date is in the past
- */
-export function isPast(dateKey: string): boolean {
-  const today = getTodayKey();
-  return dateKey < today;
-}
-
-/**
- * Check if a date is in the future
- */
-export function isFuture(dateKey: string): boolean {
-  const today = getTodayKey();
-  return dateKey > today;
-}
-
-/**
- * Get relative date string (Today, Yesterday, etc.)
- */
-export function getRelativeDate(dateKey: string): string {
-  const today = getTodayKey();
-  const yesterday = addDays(today, -1);
-  
-  if (dateKey === today) return 'Today';
-  if (dateKey === yesterday) return 'Yesterday';
-  
-  const diffDays = Math.floor(
-    (new Date(today).getTime() - new Date(dateKey).getTime()) / (1000 * 60 * 60 * 24)
-  );
-  
-  if (diffDays < 7) {
-    return getWeekday(dateKey);
-  } else if (diffDays < 30) {
-    const weeks = Math.floor(diffDays / 7);
-    return `${weeks} week${weeks > 1 ? 's' : ''} ago`;
-  } else {
-    const months = Math.floor(diffDays / 30);
-    return `${months} month${months > 1 ? 's' : ''} ago`;
+  tz?: string
+): { shouldShowToday: boolean } {
+  switch (freq) {
+    case 'daily':
+      return { shouldShowToday: true };
+    case 'weekly':
+      return { shouldShowToday: true }; // MVP: always show
+    case 'custom':
+      return { shouldShowToday: typeof targetPerWeek === 'number' ? true : true };
+    default:
+      return { shouldShowToday: true };
   }
 }

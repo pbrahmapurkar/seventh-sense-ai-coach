@@ -1,185 +1,107 @@
-// HabitCard component for Seventh Sense AI Coach
-// Displays habit information with completion toggle and progress
+// HabitCard – Seventh Sense
+// Reusable list item with icon, text, and ProgressRing
 
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Pressable, View, Text, StyleSheet } from 'react-native';
+import { useTheme } from '@react-navigation/native';
+import { Feather } from '@expo/vector-icons';
 import ProgressRing from './ProgressRing';
 
-const HabitCard = ({ 
-  habit, 
-  completedToday, 
-  onToggle, 
-  onPress,
-  style = {}
-}) => {
-  const { name, icon, remindAt, type } = habit;
-  
-  // Get icon based on habit type or custom icon
-  const getIcon = () => {
-    if (icon) return icon;
-    
-    switch (type) {
-      case 'health':
-        return 'fitness-outline';
-      case 'mind':
-        return 'brain-outline';
-      default:
-        return 'star-outline';
-    }
+/**
+ * @typedef {Object} HabitCardProps
+ * @property {{id:string,name?:string,remindAt?:string,icon?:string}} habit
+ * @property {boolean} completedToday
+ * @property {() => void} onToggle
+ * @property {() => void} onPress
+ * @property {import('react-native').ViewStyle} [style]
+ */
+
+function HabitCard({ habit, completedToday, onToggle, onPress, style }) {
+  const theme = useTheme();
+  const name = habit?.name || 'Untitled Habit';
+  const remindAt = habit?.remindAt;
+  const primary = theme?.colors?.primary || '#4F46E5';
+  const textColor = theme?.colors?.text || '#0f172a';
+  const muted = (typeof textColor === 'string' && textColor.startsWith('#'))
+    ? `${textColor}99` // ~60% opacity
+    : 'rgba(0,0,0,0.6)';
+
+  const iconName = completedToday ? 'check-circle' : 'circle';
+  const iconColor = completedToday ? primary : muted;
+
+  const computedA11y = `${name}, ${completedToday ? 'completed' : 'not completed'}${remindAt ? `, reminder at ${remindAt}` : ''}`;
+
+  const handleToggle = (e) => {
+    e?.stopPropagation?.();
+    if (typeof onToggle === 'function') onToggle();
   };
-  
-  // Get type color
-  const getTypeColor = () => {
-    switch (type) {
-      case 'health':
-        return '#10b981'; // Green
-      case 'mind':
-        return '#8b5cf6'; // Purple
-      default:
-        return '#6366f1'; // Indigo
-    }
-  };
-  
-  // Get progress value (1 if completed, 0 if not)
-  const progress = completedToday ? 1 : 0;
-  
+
   return (
-    <TouchableOpacity
+    <Pressable
       style={[styles.container, style]}
       onPress={onPress}
-      onLongPress={onPress}
-      activeOpacity={0.7}
       accessibilityRole="button"
-      accessibilityLabel={`${name} habit, ${completedToday ? 'completed' : 'not completed'} today`}
-      accessibilityHint="Tap to toggle completion, long press for details"
+      accessibilityLabel={computedA11y}
     >
-      {/* Left: Icon */}
-      <View style={[styles.iconContainer, { backgroundColor: getTypeColor() + '20' }]}>
-        <Ionicons 
-          name={getIcon()} 
-          size={24} 
-          color={getTypeColor()} 
-        />
-      </View>
-      
-      {/* Middle: Name and reminder info */}
-      <View style={styles.content}>
-        <Text style={styles.name} numberOfLines={1}>
+      {/* Left icon (press to toggle) */}
+      <Pressable
+        onPress={handleToggle}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Toggle ${name}`}
+        style={styles.left}
+      >
+        <Feather name={iconName} size={24} color={iconColor} />
+      </Pressable>
+
+      {/* Middle text */}
+      <View style={styles.middle}>
+        <Text style={[styles.name, { color: textColor, opacity: completedToday ? 0.8 : 1 }]} numberOfLines={1}>
           {name}
         </Text>
-        
-        {remindAt && (
-          <View style={styles.reminderContainer}>
-            <Ionicons name="time-outline" size={14} color="#64748b" />
-            <Text style={styles.reminderText}>
-              {remindAt}
-            </Text>
-          </View>
-        )}
+        {remindAt ? (
+          <Text style={[styles.remindAt, { color: muted }]} numberOfLines={1}>
+            Remind at {remindAt}
+          </Text>
+        ) : null}
       </View>
-      
-      {/* Right: Progress ring and toggle */}
-      <View style={styles.rightSection}>
-        <ProgressRing
-          size={40}
-          stroke={3}
-          progress={progress}
-          color={completedToday ? '#10b981' : '#6366f1'}
-          backgroundColor="#e2e8f0"
-        />
-        
-        <TouchableOpacity
-          style={[
-            styles.toggleButton,
-            completedToday && styles.toggleButtonCompleted
-          ]}
-          onPress={onToggle}
-          accessibilityRole="button"
-          accessibilityLabel={completedToday ? 'Mark as incomplete' : 'Mark as complete'}
-          accessibilityHint="Toggle habit completion for today"
-        >
-          <Ionicons 
-            name={completedToday ? 'checkmark' : 'add'} 
-            size={20} 
-            color={completedToday ? '#ffffff' : '#6366f1'} 
-          />
-        </TouchableOpacity>
-      </View>
-    </TouchableOpacity>
+
+      {/* Right progress ring (read-only) */}
+      <ProgressRing
+        size={36}
+        stroke={4}
+        progress={completedToday ? 1 : 0}
+        label={null}
+        progressColor={primary}
+        trackColor={'rgba(0,0,0,0.1)'}
+      />
+    </Pressable>
   );
-};
+}
 
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    marginVertical: 6,
-    marginHorizontal: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
   },
-  
-  iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
+  left: {
+    width: 40,
     alignItems: 'center',
-    marginRight: 16,
+    justifyContent: 'center',
   },
-  
-  content: {
+  middle: {
     flex: 1,
-    justifyContent: 'center',
+    marginHorizontal: 8,
   },
-  
   name: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 4,
   },
-  
-  reminderContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  
-  reminderText: {
-    fontSize: 14,
-    color: '#64748b',
-    marginLeft: 4,
-  },
-  
-  rightSection: {
-    alignItems: 'center',
-    gap: 8,
-  },
-  
-  toggleButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#6366f1',
-    backgroundColor: '#ffffff',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  
-  toggleButtonCompleted: {
-    backgroundColor: '#10b981',
-    borderColor: '#10b981',
+  remindAt: {
+    fontSize: 12,
+    marginTop: 2,
   },
 });
 
