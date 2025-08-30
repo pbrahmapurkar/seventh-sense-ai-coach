@@ -1,700 +1,261 @@
-// SettingsScreen for Seventh Sense AI Coach
-// Manages user preferences, data export/import, and app settings
+// SettingsScreen – Seventh Sense
+// Profile, personalization, evening recap toggle, and data import/export (merge)
 
-import React, { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  ScrollView, 
-  TouchableOpacity, 
-  TextInput,
-  Alert,
-  Switch,
-  Modal
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import React, { useMemo, useState } from 'react';
+import { SafeAreaView, View, Text, TextInput, Switch, Pressable, StyleSheet, Alert, ScrollView, Platform } from 'react-native';
+import { useTheme } from '@react-navigation/native';
 import { useUser } from '../context/UserContext';
 import { useHabitsStore } from '../store/habitsStore';
-import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system';
-import * as DocumentPicker from 'expo-document-picker';
+import * as Sharing from 'expo-sharing';
+let DocumentPicker;
+try { DocumentPicker = require('expo-document-picker'); } catch (e) { DocumentPicker = null; }
 
-const SettingsScreen = () => {
-  const navigation = useNavigation();
-  const { 
-    prefs, 
-    setName, 
-    setTheme, 
-    setAiTone, 
-    setDefaultReminderTime, 
-    toggleEveningRecap,
-    isDarkMode 
-  } = useUser();
-  
-  const { habits, logs, reset: resetStore } = useHabitsStore();
-  
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [editName, setEditName] = useState(prefs.name);
-  const [isLoading, setIsLoading] = useState(false);
-  
-  // Handle name edit
-  const handleNameEdit = () => {
-    if (editName.trim()) {
-      setName(editName.trim());
-      setIsEditingName(false);
-    } else {
-      Alert.alert('Name Required', 'Please enter a valid name.');
-    }
+function SettingsScreen() {
+  const theme = useTheme();
+  const colors = {
+    bg: theme.colors.background || (theme.dark ? '#0B0F14' : '#F7F7F8'),
+    card: theme.colors.card || (theme.dark ? '#111827' : '#FFFFFF'),
+    border: theme.colors.border || 'rgba(0,0,0,0.12)',
+    text: theme.colors.text || (theme.dark ? '#F3F4F6' : '#111827'),
+    muted: theme.dark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
+    primary: theme.colors.primary || '#4F46E5',
+    danger: theme.colors.notification || '#DC2626',
+    success: '#22C55E',
   };
-  
-  // Export data
-  const handleExportData = async () => {
+
+  const { prefs, setName, setTheme, setAiTone, setDefaultReminder, toggleEveningRecap } = useUser();
+  const store = useHabitsStore();
+
+  const [name, setNameLocal] = useState(prefs?.name || '');
+  const [themeSel, setThemeSel] = useState(prefs?.theme || 'system');
+  const [tone, setTone] = useState(prefs?.aiTone || 'coach');
+  const [remind, setRemind] = useState(prefs?.defaultReminder || '');
+  const [recap, setRecap] = useState(Boolean(prefs?.eveningRecap));
+  const [busy, setBusy] = useState(false);
+  const [importResult, setImportResult] = useState('');
+  const [errorText, setErrorText] = useState('');
+
+  const isHHmm = (v) => /^\d{2}:\d{2}$/.test(v);
+  function validateProfile() {
+    const nm = (name || '').trim();
+    if (nm && (nm.length < 2 || nm.length > 40)) {
+      setErrorText('Name should be 2–40 characters.');
+      return false;
+    }
+    if (remind && !isHHmm(remind)) {
+      setErrorText('Default reminder must be HH:mm (24h).');
+      return false;
+    }
+    setErrorText('');
+    return true;
+  }
+
+  function handleSaveProfile() {
+    if (!validateProfile()) return;
+    const nm = (name || '').trim();
+    setName(nm || undefined);
+    setTheme(themeSel);
+    setAiTone(tone);
+    setDefaultReminder(remind || undefined);
+    if (Boolean(prefs?.eveningRecap) !== recap) {
+      // toggleEveningRecap accepts optional boolean to set value directly
+      toggleEveningRecap(recap);
+    }
+    Alert.alert('Saved', 'Your preferences have been updated.');
+  }
+
+  async function handleExport() {
+    if (busy) return;
+    setBusy(true);
     try {
-      setIsLoading(true);
-      
-      const exportData = {
-        version: '1.0.0',
-        exportedAt: new Date().toISOString(),
-        user: prefs,
-        habits: habits,
-        logs: logs,
-      };
-      
-      const jsonString = JSON.stringify(exportData, null, 2);
-      const fileName = `seventh-sense-backup-${new Date().toISOString().split('T')[0]}.json`;
-      const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-      
-      await FileSystem.writeAsStringAsync(fileUri, jsonString);
-      
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(fileUri, {
-          mimeType: 'application/json',
-          dialogTitle: 'Export Seventh Sense Data',
-        });
-      } else {
-        Alert.alert(
-          'Export Complete',
-          `Data exported to: ${fileUri}`,
-          [{ text: 'OK' }]
-        );
-      }
-      
-    } catch (error) {
-      console.error('Error exporting data:', error);
-      Alert.alert('Export Failed', 'Failed to export data. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
-  // Import data
-  const handleImportData = async () => {
-    try {
-      setIsLoading(true);
-      
-      const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
-        copyToCacheDirectory: true,
-      });
-      
-      if (result.canceled) return;
-      
-      const fileUri = result.assets[0].uri;
-      const fileContent = await FileSystem.readAsStringAsync(fileUri);
-      const importData = JSON.parse(fileContent);
-      
-      // Validate import data
-      if (!importData.version || !importData.habits || !importData.logs) {
-        throw new Error('Invalid backup file format');
-      }
-      
-      // Confirm import
-      Alert.alert(
-        'Confirm Import',
-        `This will import ${importData.habits.length} habits and ${importData.logs.length} logs. This action will replace your current data. Are you sure?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Import',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                // Reset current store
-                resetStore();
-                
-                // Import new data
-                if (importData.user) {
-                  // Update user preferences
-                  Object.keys(importData.user).forEach(key => {
-                    if (key in prefs) {
-                      // Update individual preferences
-                      switch (key) {
-                        case 'name':
-                          setName(importData.user[key]);
-                          break;
-                        case 'theme':
-                          setTheme(importData.user[key]);
-                          break;
-                        case 'aiTone':
-                          setAiTone(importData.user[key]);
-                          break;
-                        case 'defaultReminderTime':
-                          setDefaultReminderTime(importData.user[key]);
-                          break;
-                        case 'eveningRecapEnabled':
-                          toggleEveningRecap(importData.user[key]);
-                          break;
-                      }
-                    }
-                  });
-                }
-                
-                // Import habits and logs
-                if (importData.habits) {
-                  useHabitsStore.getState().setHabits(importData.habits);
-                }
-                if (importData.logs) {
-                  useHabitsStore.getState().setLogs(importData.logs);
-                }
-                
-                Alert.alert('Import Complete', 'Your data has been imported successfully!');
-                
-              } catch (error) {
-                console.error('Error during import:', error);
-                Alert.alert('Import Failed', 'Failed to import data. Please try again.');
-              }
-            },
-          },
-        ]
-      );
-      
-    } catch (error) {
-      console.error('Error importing data:', error);
-      Alert.alert('Import Failed', 'Failed to import data. Please check the file format and try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
-  // Reset all data
-  const handleResetData = () => {
-    Alert.alert(
-      'Reset All Data',
-      'This will permanently delete all your habits, logs, and settings. This action cannot be undone. Are you sure?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              resetStore();
-              // Reset user preferences to defaults
-              setName('');
-              setTheme('system');
-              setAiTone('coach');
-              setDefaultReminderTime('09:00');
-              toggleEveningRecap(false);
-              
-              Alert.alert('Reset Complete', 'All data has been reset. You will be redirected to onboarding.');
-              // Navigation will automatically handle going back to onboarding
-            } catch (error) {
-              console.error('Error resetting data:', error);
-              Alert.alert('Reset Failed', 'Failed to reset data. Please try again.');
-            }
-          },
+      const payload = {
+        version: 1,
+        exportedAt: Date.now(),
+        prefs: {
+          name: prefs?.name,
+          aiTone: prefs?.aiTone,
+          theme: prefs?.theme,
+          defaultReminder: prefs?.defaultReminder,
+          timezone: prefs?.timezone,
+          eveningRecap: prefs?.eveningRecap,
         },
-      ]
+        habits: store.habits || [],
+        logs: store.logs || [],
+      };
+      const json = JSON.stringify(payload, null, 2);
+      const fname = `seventh-sense-export-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      const uri = (FileSystem.cacheDirectory || FileSystem.documentDirectory) + fname;
+      await FileSystem.writeAsStringAsync(uri, json, { encoding: FileSystem.EncodingType.UTF8 });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/json', dialogTitle: 'Export Seventh Sense data' });
+      } else {
+        Alert.alert('Saved', `File saved: ${uri}`);
+      }
+    } catch (e) {
+      Alert.alert('Export failed', 'Could not export data. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImport() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      let jsonStr = null;
+      if (DocumentPicker?.getDocumentAsync) {
+        const res = await DocumentPicker.getDocumentAsync({ type: 'application/json', multiple: false, copyToCacheDirectory: true });
+        if (res.canceled) { setBusy(false); return; }
+        const file = res.assets?.[0];
+        if (!file?.uri) throw new Error('No file');
+        jsonStr = await FileSystem.readAsStringAsync(file.uri, { encoding: FileSystem.EncodingType.UTF8 });
+      } else {
+        Alert.alert('Document Picker unavailable', 'Please install expo-document-picker to import, or use another device.');
+        setBusy(false);
+        return;
+      }
+
+      const parsed = JSON.parse(jsonStr);
+      const incHabits = Array.isArray(parsed?.habits) ? parsed.habits : [];
+      const incLogs = Array.isArray(parsed?.logs) ? parsed.logs : [];
+
+      const existingHabits = store.habits || [];
+      const existingLogs = store.logs || [];
+
+      const habitIds = new Set(existingHabits.map((h) => h.id));
+      const logIds = new Set(existingLogs.map((l) => l.id));
+
+      const newHabits = [];
+      let skippedHabits = 0;
+      for (const h of incHabits) {
+        if (!h?.id) { skippedHabits++; continue; }
+        if (habitIds.has(h.id)) { skippedHabits++; continue; }
+        habitIds.add(h.id);
+        newHabits.push(h);
+      }
+
+      const finalHabitIds = habitIds;
+      const newLogs = [];
+      let skippedLogs = 0;
+      for (const l of incLogs) {
+        if (!l?.id) { skippedLogs++; continue; }
+        if (logIds.has(l.id)) { skippedLogs++; continue; }
+        if (!l?.habitId || !finalHabitIds.has(l.habitId)) { skippedLogs++; continue; }
+        logIds.add(l.id);
+        newLogs.push(l);
+      }
+
+      useHabitsStore.setState((s) => ({
+        habits: newHabits.length ? [...(s.habits || []), ...newHabits] : (s.habits || []),
+        logs: newLogs.length ? [...(s.logs || []), ...newLogs] : (s.logs || []),
+      }));
+      try { useHabitsStore.getState()._saveNow?.(); } catch {}
+
+      setImportResult(`Imported ${newHabits.length} habits, ${newLogs.length} logs. Skipped ${skippedHabits} habit(s), ${skippedLogs} log(s).`);
+      Alert.alert('Import complete', 'Your data has been merged.');
+    } catch (e) {
+      Alert.alert('Import failed', 'Invalid file or format.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function Segmented({ value, onChange, options }) {
+    return (
+      <View style={styles.segmented}>
+        {options.map((opt) => {
+          const active = value === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => onChange(opt.value)}
+              style={[styles.segment, { borderColor: colors.border }, active && { backgroundColor: colors.primary, borderColor: 'transparent' }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Select ${opt.label}`}
+            >
+              <Text style={[styles.segmentText, { color: active ? '#fff' : colors.text }]} allowFontScaling>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
     );
-  };
-  
-  // Get theme display name
-  const getThemeDisplayName = (theme) => {
-    switch (theme) {
-      case 'system':
-        return 'System Default';
-      case 'light':
-        return 'Light';
-      case 'dark':
-        return 'Dark';
-      default:
-        return 'System Default';
-    }
-  };
-  
-  // Get AI tone display name
-  const getAiToneDisplayName = (tone) => {
-    switch (tone) {
-      case 'coach':
-        return 'Motivational Coach';
-      case 'friend':
-        return 'Supportive Friend';
-      case 'zen':
-        return 'Mindful Guide';
-      default:
-        return 'Motivational Coach';
-    }
-  };
-  
+  }
+
   return (
-    <View style={styles.container}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Settings</Text>
-          <Text style={styles.subtitle}>
-            Customize your Seventh Sense experience
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]} accessibilityLabel="Settings screen">
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
+        {/* Profile & Personalization */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>\n          <Text style={[styles.title, { color: colors.text }]} allowFontScaling>Settings</Text>\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Name</Text>\n          <TextInput\n            value={name}\n            onChangeText={setNameLocal}\n            placeholder="Your name"\n            placeholderTextColor={colors.muted}\n            style={[styles.input, { color: colors.text, borderColor: colors.border }]}\n            maxLength={40}\n            accessibilityLabel="Your name"\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Theme</Text>\n          <Segmented\n            value={themeSel}\n            onChange={setThemeSel}\n            options={[\n              { label: 'System', value: 'system' },\n              { label: 'Light', value: 'light' },\n              { label: 'Dark', value: 'dark' },\n            ]}\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>AI Tone</Text>\n          <Segmented\n            value={tone}\n            onChange={setTone}\n            options={[\n              { label: 'Coach', value: 'coach' },\n              { label: 'Friend', value: 'friend' },\n              { label: 'Zen', value: 'zen' },\n            ]}\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Default Reminder Time (optional)</Text>\n          <TextInput\n            value={remind}\n            onChangeText={setRemind}\n            placeholder="HH:mm (24h)"\n            placeholderTextColor={colors.muted}\n            style={[styles.input, { color: colors.text, borderColor: colors.border }]}\n            keyboardType="numbers-and-punctuation"\n            autoCapitalize="none"\n            accessibilityLabel="Default reminder time HH:mm"\n          />\n\n          <View style={styles.row}>\n            <Text style={{ color: colors.text }} allowFontScaling>Evening Recap Notifications</Text>\n            <Switch\n              value={recap}\n              onValueChange={() => setRecap((v) => !v)}\n              accessibilityLabel="Toggle evening recap notifications"\n            />\n          </View>\n\n          {errorText ? <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>{errorText}</Text> : null}\n\n          <View style={styles.actionsRow}>\n            <Pressable\n              onPress={handleSaveProfile}\n              disabled={busy}\n              style={[styles.btnPrimary, { backgroundColor: colors.primary, opacity: busy ? 0.9 : 1 }]}\n              accessibilityRole="button"\n              accessibilityLabel="Save settings"\n            >\n              <Text style={styles.btnPrimaryText} allowFontScaling>{busy ? 'Working…' : 'Save'}</Text>\n            </Pressable>\n          </View>\n        </View>
+
+        {/* Data */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.subtitle, { color: colors.text }]} allowFontScaling>
+            Data
           </Text>
-        </View>
-        
-        {/* Profile Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Profile</Text>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingInfo}>
-              <Ionicons name="person-outline" size={20} color="#6366f1" />
-              <Text style={styles.settingLabel}>Name</Text>
-            </View>
-            
-            {isEditingName ? (
-              <View style={styles.editContainer}>
-                <TextInput
-                  style={styles.editInput}
-                  value={editName}
-                  onChangeText={setEditName}
-                  placeholder="Enter your name"
-                  autoFocus
-                  accessibilityLabel="Name input field"
-                />
-                <TouchableOpacity
-                  style={styles.saveButton}
-                  onPress={handleNameEdit}
-                  accessibilityRole="button"
-                  accessibilityLabel="Save name"
-                >
-                  <Ionicons name="checkmark" size={16} color="#ffffff" />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.settingValue}
-                onPress={() => setIsEditingName(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Edit name"
-              >
-                <Text style={styles.settingValueText}>
-                  {prefs.name || 'Not set'}
-                </Text>
-                <Ionicons name="chevron-forward" size={16} color="#64748b" />
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-        
-        {/* Appearance Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Appearance</Text>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingInfo}>
-              <Ionicons name="color-palette-outline" size={20} color="#8b5cf6" />
-              <Text style={styles.settingLabel}>Theme</Text>
-            </View>
-            
-            <TouchableOpacity
-              style={styles.settingValue}
-              onPress={() => {
-                const themes = ['system', 'light', 'dark'];
-                const currentIndex = themes.indexOf(prefs.theme);
-                const nextTheme = themes[(currentIndex + 1) % themes.length];
-                setTheme(nextTheme);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Change theme"
-            >
-              <Text style={styles.settingValueText}>
-                {getThemeDisplayName(prefs.theme)}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color="#64748b" />
-            </TouchableOpacity>
-          </View>
-        </View>
-        
-        {/* AI Settings Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>AI Coach</Text>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingInfo}>
-              <Ionicons name="sparkles-outline" size={20} color="#f59e0b" />
-              <Text style={styles.settingLabel}>AI Tone</Text>
-            </View>
-            
-            <TouchableOpacity
-              style={styles.settingValue}
-              onPress={() => {
-                const tones = ['coach', 'friend', 'zen'];
-                const currentIndex = tones.indexOf(prefs.aiTone);
-                const nextTone = tones[(currentIndex + 1) % tones.length];
-                setAiTone(nextTone);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Change AI tone"
-            >
-              <Text style={styles.settingValueText}>
-                {getAiToneDisplayName(prefs.aiTone)}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color="#64748b" />
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingInfo}>
-              <Ionicons name="time-outline" size={20} color="#10b981" />
-              <Text style={styles.settingLabel}>Default Reminder Time</Text>
-            </View>
-            
-            <TouchableOpacity
-              style={styles.settingValue}
-              onPress={() => {
-                const times = ['08:00', '09:00', '10:00', '12:00', '15:00', '18:00'];
-                const currentIndex = times.indexOf(prefs.defaultReminderTime);
-                const nextTime = times[(currentIndex + 1) % times.length];
-                setDefaultReminderTime(nextTime);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Change default reminder time"
-            >
-              <Text style={styles.settingValueText}>
-                {prefs.defaultReminderTime}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color="#64748b" />
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.settingItem}>
-            <View style={styles.settingInfo}>
-              <Ionicons name="moon-outline" size={20} color="#6366f1" />
-              <Text style={styles.settingLabel}>Evening Recap Notifications</Text>
-              <Text style={styles.settingDescription}>
-                Get a daily reminder to check in on your habits
-              </Text>
-            </View>
-            
-            <Switch
-              value={prefs.eveningRecapEnabled}
-              onValueChange={toggleEveningRecap}
-              trackColor={{ false: '#e2e8f0', true: '#6366f1' }}
-              thumbColor="#ffffff"
-              accessibilityRole="switch"
-              accessibilityLabel="Toggle evening recap notifications"
-            />
-          </View>
-        </View>
-        
-        {/* Data Management Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Data Management</Text>
-          
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={handleExportData}
-            disabled={isLoading}
+
+          <Pressable
+            onPress={handleExport}
+            disabled={busy}
+            style={[styles.btnRow, { borderColor: colors.border }]}
             accessibilityRole="button"
-            accessibilityLabel="Export your data"
-            accessibilityHint="Export all habits, logs, and settings to a JSON file"
+            accessibilityLabel="Export data"
           >
-            <View style={styles.actionButtonContent}>
-              <Ionicons name="download-outline" size={20} color="#10b981" />
-              <Text style={styles.actionButtonText}>Export Data</Text>
-            </View>
-            {isLoading && (
-              <Text style={styles.loadingText}>Exporting...</Text>
-            )}
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={handleImportData}
-            disabled={isLoading}
+            <Text style={[styles.btnRowText, { color: colors.text }]} allowFontScaling>
+              Export data (JSON)
+            </Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleImport}
+            disabled={busy}
+            style={[styles.btnRow, { borderColor: colors.border }]}
             accessibilityRole="button"
-            accessibilityLabel="Import data from backup"
-            accessibilityHint="Import habits, logs, and settings from a backup file"
+            accessibilityLabel="Import data"
           >
-            <View style={styles.actionButtonContent}>
-              <Ionicons name="upload-outline" size={20} color="#6366f1" />
-              <Text style={styles.actionButtonText}>Import Data</Text>
-            </View>
-            {isLoading && (
-              <Text style={styles.loadingText}>Importing...</Text>
-            )}
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.actionButton, styles.dangerButton]}
-            onPress={handleResetData}
-            disabled={isLoading}
-            accessibilityRole="button"
-            accessibilityLabel="Reset all data"
-            accessibilityHint="Permanently delete all habits, logs, and settings"
-          >
-            <View style={styles.actionButtonContent}>
-              <Ionicons name="trash-outline" size={20} color="#ef4444" />
-              <Text style={[styles.actionButtonText, styles.dangerText]}>Reset All Data</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-        
-        {/* App Info Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>App Information</Text>
-          
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Version</Text>
-            <Text style={styles.infoValue}>1.0.0</Text>
-          </View>
-          
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Total Habits</Text>
-            <Text style={styles.infoValue}>{habits.length}</Text>
-          </View>
-          
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Total Logs</Text>
-            <Text style={styles.infoValue}>{logs.length}</Text>
-          </View>
-          
-          <View style={styles.infoItem}>
-            <Text style={styles.infoLabel}>Storage</Text>
-            <Text style={styles.infoValue}>Local (Device)</Text>
-          </View>
-        </View>
-        
-        {/* Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Made with ❤️ by Seventh Sense AI Coach
-          </Text>
-          <Text style={styles.footerSubtext}>
-            Your data stays on your device
+            <Text style={[styles.btnRowText, { color: colors.text }]} allowFontScaling>
+              Import data (merge)
+            </Text>
+          </Pressable>
+
+          {importResult ? (
+            <Text style={[styles.small, { color: colors.muted, marginTop: 6 }]} allowFontScaling>
+              {importResult}
+            </Text>
+          ) : null}
+
+          <Text style={[styles.footnote, { color: colors.muted }]} allowFontScaling>
+            Import merges by ID. Existing habits/logs are kept; duplicates are skipped.
           </Text>
         </View>
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
-};
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  
-  scrollView: {
-    flex: 1,
-  },
-  
-  header: {
-    alignItems: 'center',
-    paddingTop: 20,
-    paddingBottom: 32,
-    paddingHorizontal: 24,
-  },
-  
-  title: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  
-  subtitle: {
-    fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  
-  section: {
-    marginBottom: 32,
-    paddingHorizontal: 20,
-  },
-  
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 16,
-  },
-  
-  settingItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 3,
-  },
-  
-  settingInfo: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  
-  settingLabel: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#0f172a',
-  },
-  
-  settingDescription: {
-    fontSize: 12,
-    color: '#64748b',
-    marginTop: 4,
-    lineHeight: 16,
-  },
-  
-  settingValue: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  
-  settingValueText: {
-    fontSize: 14,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  
-  editContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  
-  editInput: {
-    backgroundColor: '#f1f5f9',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-    color: '#0f172a',
-    minWidth: 120,
-  },
-  
-  saveButton: {
-    backgroundColor: '#10b981',
-    borderRadius: 8,
-    padding: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  
-  actionButton: {
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 3,
-  },
-  
-  actionButtonContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  
-  actionButtonText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: '#0f172a',
-  },
-  
-  dangerButton: {
-    borderWidth: 2,
-    borderColor: '#fecaca',
-    backgroundColor: '#fef2f2',
-  },
-  
-  dangerText: {
-    color: '#ef4444',
-  },
-  
-  loadingText: {
-    fontSize: 14,
-    color: '#64748b',
-    fontStyle: 'italic',
-  },
-  
-  infoItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  
-  infoLabel: {
-    fontSize: 14,
-    color: '#64748b',
-  },
-  
-  infoValue: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#0f172a',
-  },
-  
-  footer: {
-    alignItems: 'center',
-    paddingVertical: 40,
-    paddingHorizontal: 24,
-  },
-  
-  footerText: {
-    fontSize: 14,
-    color: '#64748b',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  
-  footerSubtext: {
-    fontSize: 12,
-    color: '#94a3b8',
-    textAlign: 'center',
-  },
-});
+}
 
 export default SettingsScreen;
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, marginBottom: 12 },
+  title: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
+  subtitle: { fontSize: 16, fontWeight: '700', marginBottom: 8 },
+  label: { fontSize: 13, fontWeight: '600', opacity: 0.85, marginTop: 8 },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, marginTop: 6 },
+  row: { marginTop: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  actionsRow: { marginTop: 12, flexDirection: 'row', gap: 12 },
+  btnPrimary: { flex: 1, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  btnPrimaryText: { color: '#fff', fontWeight: '700' },
+  btnRow: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingVertical: 12, paddingHorizontal: 12, marginTop: 8 },
+  btnRowText: { fontWeight: '600' },
+  segmented: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  segment: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  segmentText: { fontSize: 14, fontWeight: '600' },
+  error: { fontSize: 12, marginTop: 6 },
+  small: { fontSize: 12 },
+  footnote: { fontSize: 12, marginTop: 8 },
+});
+

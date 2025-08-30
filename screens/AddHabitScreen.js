@@ -1,597 +1,307 @@
-// AddHabitScreen for Seventh Sense AI Coach
-// Form to create new habits with type, frequency, and reminder settings
+// AddHabitScreen – Seventh Sense
+// Simple, accessible Add Habit form with validation and reminder scheduling
 
-import React, { useState } from 'react';
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  StyleSheet, 
-  ScrollView, 
-  Alert,
-  KeyboardAvoidingView,
-  Platform
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import { useHabitsStore } from '../store/habitsStore';
+import React, { useMemo, useState } from 'react';
+import { SafeAreaView, View, Text, TextInput, Pressable, ScrollView, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { useNavigation, useTheme } from '@react-navigation/native';
+import { Feather } from '@expo/vector-icons';
 import { useUser } from '../context/UserContext';
+import { useHabitsStore } from '../store/habitsStore';
+import { setupPermissions, scheduleDaily } from '../utils/notify';
 
-const AddHabitScreen = () => {
-  const navigation = useNavigation();
-  const { addHabit } = useHabitsStore();
+function AddHabitScreen() {
+  const nav = useNavigation();
+  const theme = useTheme();
   const { prefs } = useUser();
-  
-  const [formData, setFormData] = useState({
-    name: '',
-    type: 'health',
-    freq: 'daily',
-    targetPerWeek: 7,
-    remindAt: prefs.defaultReminderTime || '09:00',
-  });
-  
-  const [isLoading, setIsLoading] = useState(false);
-  
-  // Update form field
-  const updateField = (field, value) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-  };
-  
-  // Handle form submission
-  const handleSubmit = async () => {
-    if (!formData.name.trim()) {
-      Alert.alert('Name Required', 'Please enter a habit name.');
-      return;
-    }
-    
-    try {
-      setIsLoading(true);
-      
-      const newHabit = {
-        name: formData.name.trim(),
-        type: formData.type,
-        freq: formData.freq,
-        targetPerWeek: formData.freq === 'daily' ? 7 : formData.targetPerWeek,
-        remindAt: formData.remindAt || '',
-      };
-      
-      await addHabit(newHabit);
-      
-      Alert.alert(
-        'Success!', 
-        `"${newHabit.name}" has been added to your habits.`,
-        [
-          {
-            text: 'OK',
-            onPress: () => navigation.goBack(),
-          },
-        ]
-      );
-      
-    } catch (error) {
-      console.error('Error adding habit:', error);
-      Alert.alert('Error', 'Failed to add habit. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  
-  // Cancel form
-  const handleCancel = () => {
-    if (formData.name.trim()) {
-      Alert.alert(
-        'Discard Changes?',
-        'Are you sure you want to discard this habit?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Discard', style: 'destructive', onPress: () => navigation.goBack() },
-        ]
-      );
-    } else {
-      navigation.goBack();
-    }
-  };
-  
-  // Get icon for habit type
-  const getTypeIcon = (type) => {
-    switch (type) {
-      case 'health':
-        return 'fitness-outline';
-      case 'mind':
-        return 'brain-outline';
-      default:
-        return 'star-outline';
-    }
-  };
-  
-  // Get color for habit type
-  const getTypeColor = (type) => {
-    switch (type) {
-      case 'health':
-        return '#10b981';
-      case 'mind':
-        return '#8b5cf6';
-      default:
-        return '#6366f1';
-    }
-  };
-  
-  return (
-    <KeyboardAvoidingView 
-      style={styles.container} 
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView 
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Add New Habit</Text>
-          <Text style={styles.subtitle}>
-            Create a habit that fits your lifestyle and goals
-          </Text>
-        </View>
-        
-        {/* Habit Name */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Habit Name</Text>
-          <TextInput
-            style={styles.textInput}
-            value={formData.name}
-            onChangeText={(text) => updateField('name', text)}
-            placeholder="e.g., Drink water, Read, Exercise"
-            placeholderTextColor="#94a3b8"
-            autoFocus
-            accessibilityLabel="Habit name input field"
-            accessibilityHint="Enter the name of your new habit"
-          />
-        </View>
-        
-        {/* Habit Type */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Category</Text>
-          <View style={styles.typeOptions}>
-            {[
-              { key: 'health', label: 'Health', icon: 'fitness-outline' },
-              { key: 'mind', label: 'Mind', icon: 'brain-outline' },
-              { key: 'custom', label: 'Custom', icon: 'star-outline' },
-            ].map((type) => (
-              <TouchableOpacity
-                key={type.key}
-                style={[
-                  styles.typeOption,
-                  formData.type === type.key && styles.typeOptionSelected,
-                  { borderColor: getTypeColor(type.key) }
-                ]}
-                onPress={() => updateField('type', type.key)}
-                accessibilityRole="radio"
-                accessibilityLabel={`${type.label} category option`}
-                accessibilityState={{ checked: formData.type === type.key }}
-              >
-                <Ionicons 
-                  name={type.icon} 
-                  size={24} 
-                  color={formData.type === type.key ? getTypeColor(type.key) : '#64748b'} 
-                />
-                <Text style={[
-                  styles.typeLabel,
-                  formData.type === type.key && { color: getTypeColor(type.key) }
-                ]}>
-                  {type.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-        
-        {/* Frequency */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Frequency</Text>
-          <View style={styles.frequencyOptions}>
-            {[
-              { key: 'daily', label: 'Daily', description: 'Every day' },
-              { key: 'weekly', label: 'Weekly', description: 'Specific days' },
-              { key: 'custom', label: 'Custom', description: 'Set your own target' },
-            ].map((freq) => (
-              <TouchableOpacity
-                key={freq.key}
-                style={[
-                  styles.frequencyOption,
-                  formData.freq === freq.key && styles.frequencyOptionSelected
-                ]}
-                onPress={() => updateField('freq', freq.key)}
-                accessibilityRole="radio"
-                accessibilityLabel={`${freq.label} frequency option`}
-                accessibilityState={{ checked: formData.freq === freq.key }}
-              >
-                <View style={styles.frequencyContent}>
-                  <Text style={[
-                    styles.frequencyLabel,
-                    formData.freq === freq.key && styles.frequencyLabelSelected
-                  ]}>
-                    {freq.label}
-                  </Text>
-                  <Text style={styles.frequencyDescription}>
-                    {freq.description}
-                  </Text>
-                </View>
-                {formData.freq === freq.key && (
-                  <Ionicons name="checkmark-circle" size={24} color="#6366f1" />
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-        
-        {/* Target Per Week (for weekly/custom) */}
-        {(formData.freq === 'weekly' || formData.freq === 'custom') && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>
-              {formData.freq === 'weekly' ? 'Days per week' : 'Target per week'}
-            </Text>
-            <View style={styles.targetOptions}>
-              {[3, 4, 5, 6, 7].map((target) => (
-                <TouchableOpacity
-                  key={target}
-                  style={[
-                    styles.targetOption,
-                    formData.targetPerWeek === target && styles.targetOptionSelected
-                  ]}
-                  onPress={() => updateField('targetPerWeek', target)}
-                  accessibilityRole="radio"
-                  accessibilityLabel={`${target} times per week option`}
-                  accessibilityState={{ checked: formData.targetPerWeek === target }}
-                >
-                  <Text style={[
-                    styles.targetText,
-                    formData.targetPerWeek === target && styles.targetTextSelected
-                  ]}>
-                    {target}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        )}
-        
-        {/* Reminder Time */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Daily Reminder (Optional)</Text>
-          <Text style={styles.sectionSubtitle}>
-            When would you like to be reminded about this habit?
-          </Text>
-          
-          <View style={styles.reminderOptions}>
-            <TouchableOpacity
-              style={[
-                styles.reminderOption,
-                !formData.remindAt && styles.reminderOptionSelected
-              ]}
-              onPress={() => updateField('remindAt', '')}
-              accessibilityRole="radio"
-              accessibilityLabel="No reminder option"
-              accessibilityState={{ checked: !formData.remindAt }}
+  const addHabit = useHabitsStore((s) => s.addHabit);
+
+  const [name, setName] = useState('');
+  const [type, setType] = useState('health');
+  const [frequency, setFrequency] = useState('daily');
+  const [targetPerWeek, setTargetPerWeek] = useState('');
+  const [remindAt, setRemindAt] = useState(prefs?.defaultReminder || '');
+  const [errors, setErrors] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  // Theme tokens
+  const colors = useMemo(
+    () => ({
+      bg: theme.colors.background || (theme.dark ? '#0B0F14' : '#F7F7F8'),
+      card: theme.colors.card || (theme.dark ? '#111827' : '#FFFFFF'),
+      border: theme.colors.border || 'rgba(0,0,0,0.12)',
+      text: theme.colors.text || (theme.dark ? '#F3F4F6' : '#111827'),
+      muted: theme.dark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
+      primary: theme.colors.primary || '#4F46E5',
+      danger: theme.colors.notification || '#DC2626',
+    }),
+    [theme]
+  );
+
+  // Segmented control
+  function Segmented({ value, onChange, options }) {
+    return (
+      <View style={styles.segmented}>
+        {options.map((opt) => {
+          const active = value === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => onChange(opt.value)}
+              style={[styles.segment, { borderColor: colors.border }, active && { backgroundColor: colors.primary, borderColor: 'transparent' }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Select ${opt.label}`}
             >
-              <Ionicons 
-                name="notifications-off-outline" 
-                size={20} 
-                color={!formData.remindAt ? '#6366f1' : '#64748b'} 
-              />
-              <Text style={[
-                styles.reminderText,
-                !formData.remindAt && styles.reminderTextSelected
-              ]}>
-                No reminder
+              <Text style={[styles.segmentText, { color: active ? '#fff' : colors.text }]} allowFontScaling>
+                {opt.label}
               </Text>
-            </TouchableOpacity>
-            
-            {['08:00', '09:00', '10:00', '12:00', '15:00', '18:00'].map((time) => (
-              <TouchableOpacity
-                key={time}
-                style={[
-                  styles.reminderOption,
-                  formData.remindAt === time && styles.reminderOptionSelected
-                ]}
-                onPress={() => updateField('remindAt', time)}
-                accessibilityRole="radio"
-                accessibilityLabel={`${time} reminder time option`}
-                accessibilityState={{ checked: formData.remindAt === time }}
-              >
-                <Ionicons 
-                  name="time-outline" 
-                  size={20} 
-                  color={formData.remindAt === time ? '#6366f1' : '#64748b'} 
-                />
-                <Text style={[
-                  styles.reminderText,
-                  formData.remindAt === time && styles.reminderTextSelected
-                ]}>
-                  {time}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+  }
+
+  // Validation
+  const isHHmm = (v) => /^\d{2}:\d{2}$/.test(String(v || ''));
+  function validate() {
+    const e = {};
+    const nm = (name || '').trim();
+    if (nm.length < 2 || nm.length > 60) e.name = 'Name should be 2–60 characters.';
+    if (frequency !== 'daily') {
+      const n = parseInt(targetPerWeek, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 14) e.targetPerWeek = 'Choose 1–14 per week.';
+    }
+    if (remindAt && !isHHmm(remindAt)) e.remindAt = 'Use HH:mm (24h).';
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  // Save handler
+  async function handleSave() {
+    if (saving) return;
+    if (!validate()) return;
+    setSaving(true);
+    try {
+      const nm = name.trim();
+      const payload = {
+        name: nm,
+        type,
+        freq: frequency,
+        targetPerWeek: frequency === 'daily' ? undefined : parseInt(targetPerWeek || '0', 10),
+        remindAt: remindAt || undefined,
+        createdAt: Date.now(),
+      };
+      const created = addHabit(payload);
+
+      if (remindAt) {
+        const granted = await setupPermissions();
+        if (granted) {
+          try { await scheduleDaily(created.id, remindAt, prefs?.timezone || 'UTC'); } catch {}
+        }
+      }
+      nav.goBack();
+    } catch (e) {
+      setErrors((prev) => ({ ...prev, form: 'Could not save. Please try again.' }));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]]}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+          <Text style={[styles.title, { color: colors.text }]} allowFontScaling>
+            Add Habit
+          </Text>
+
+          {/* Name */}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>
+              Name *
+            </Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder="e.g., Drink Water 2L"
+              placeholderTextColor={colors.muted}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              maxLength={60}
+              accessibilityLabel="Habit name"
+              autoCapitalize="sentences"
+              returnKeyType="done"
+            />
+            {errors.name ? (
+              <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>
+                {errors.name}
+              </Text>
+            ) : null}
           </View>
-        </View>
-        
-        {/* Action Buttons */}
-        <View style={styles.actions}>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={handleCancel}
-            disabled={isLoading}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel adding habit"
-          >
-            <Text style={styles.cancelButtonText}>Cancel</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={[styles.submitButton, !formData.name.trim() && styles.submitButtonDisabled]}
-            onPress={handleSubmit}
-            disabled={isLoading || !formData.name.trim()}
-            accessibilityRole="button"
-            accessibilityLabel="Create new habit"
-            accessibilityHint="Submit the form to create your new habit"
-          >
-            {isLoading ? (
-              <Text style={styles.submitButtonText}>Creating...</Text>
-            ) : (
+
+          {/* Type */}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>
+              Type
+            </Text>
+            <Segmented
+              value={type}
+              onChange={setType}
+              options={[
+                { label: 'Health', value: 'health' },
+                { label: 'Mind', value: 'mind' },
+                { label: 'Custom', value: 'custom' },
+              ]}
+            />
+          </View>
+
+          {/* Frequency & Target */}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>
+              Frequency
+            </Text>
+            <Segmented
+              value={frequency}
+              onChange={setFrequency}
+              options={[
+                { label: 'Daily', value: 'daily' },
+                { label: 'Weekly', value: 'weekly' },
+                { label: 'Custom', value: 'custom' },
+              ]}
+            />
+            {(frequency === 'weekly' || frequency === 'custom') && (
               <>
-                <Ionicons name="checkmark" size={20} color="#ffffff" />
-                <Text style={styles.submitButtonText}>Create Habit</Text>
+                <Text style={[styles.label2, { color: colors.muted }]} allowFontScaling>
+                  Target per week
+                </Text>
+                <TextInput
+                  value={targetPerWeek}
+                  onChangeText={setTargetPerWeek}
+                  placeholder="e.g., 3"
+                  placeholderTextColor={colors.muted}
+                  style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+                  keyboardType="number-pad"
+                  maxLength={2}
+                  accessibilityLabel="Target per week"
+                />
+                {errors.targetPerWeek ? (
+                  <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>
+                    {errors.targetPerWeek}
+                  </Text>
+                ) : null}
               </>
             )}
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
-  );
-};
+          </View>
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  
-  scrollView: {
-    flex: 1,
-  },
-  
-  scrollContent: {
-    paddingBottom: 40,
-  },
-  
-  header: {
-    alignItems: 'center',
-    paddingTop: 20,
-    paddingBottom: 32,
-    paddingHorizontal: 24,
-  },
-  
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  
-  subtitle: {
-    fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  
-  section: {
-    marginBottom: 32,
-    paddingHorizontal: 24,
-  },
-  
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 16,
-  },
-  
-  sectionSubtitle: {
-    fontSize: 14,
-    color: '#64748b',
-    marginBottom: 16,
-    lineHeight: 20,
-  },
-  
-  textInput: {
-    width: '100%',
-    height: 56,
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    paddingHorizontal: 20,
-    fontSize: 16,
-    color: '#0f172a',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  
-  typeOptions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  
-  typeOption: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 20,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-    backgroundColor: '#ffffff',
-  },
-  
-  typeOptionSelected: {
-    backgroundColor: '#f8fafc',
-  },
-  
-  typeLabel: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#64748b',
-    marginTop: 8,
-  },
-  
-  frequencyOptions: {
-    gap: 12,
-  },
-  
-  frequencyOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 16,
-    backgroundColor: '#ffffff',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  
-  frequencyOptionSelected: {
-    borderColor: '#6366f1',
-    backgroundColor: '#f8fafc',
-  },
-  
-  frequencyContent: {
-    flex: 1,
-  },
-  
-  frequencyLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 4,
-  },
-  
-  frequencyLabelSelected: {
-    color: '#6366f1',
-  },
-  
-  frequencyDescription: {
-    fontSize: 14,
-    color: '#64748b',
-  },
-  
-  targetOptions: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  
-  targetOption: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 16,
-    borderRadius: 16,
-    backgroundColor: '#ffffff',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  
-  targetOptionSelected: {
-    borderColor: '#6366f1',
-    backgroundColor: '#f8fafc',
-  },
-  
-  targetText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#64748b',
-  },
-  
-  targetTextSelected: {
-    color: '#6366f1',
-  },
-  
-  reminderOptions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  
-  reminderOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: '#ffffff',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-    gap: 8,
-  },
-  
-  reminderOptionSelected: {
-    borderColor: '#6366f1',
-    backgroundColor: '#f8fafc',
-  },
-  
-  reminderText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#64748b',
-  },
-  
-  reminderTextSelected: {
-    color: '#6366f1',
-  },
-  
-  actions: {
-    flexDirection: 'row',
-    paddingHorizontal: 24,
-    gap: 16,
-    marginTop: 16,
-  },
-  
-  cancelButton: {
-    flex: 1,
-    height: 56,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#e2e8f0',
-  },
-  
-  cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#64748b',
-  },
-  
-  submitButton: {
-    flex: 2,
-    height: 56,
-    backgroundColor: '#6366f1',
-    borderRadius: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexDirection: 'row',
-    gap: 8,
-  },
-  
-  submitButtonDisabled: {
-    backgroundColor: '#cbd5e1',
-  },
-  
-  submitButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-});
+          {/* Reminder */}
+          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>
+              Reminder time (optional)
+            </Text>
+            <TextInput
+              value={remindAt}
+              onChangeText={setRemindAt}
+              placeholder="HH:mm (24h)"
+              placeholderTextColor={colors.muted}
+              style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              accessibilityLabel="Reminder time HH:mm"
+            />
+            {errors.remindAt ? (
+              <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>
+                {errors.remindAt}
+              </Text>
+            ) : null}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              {prefs?.defaultReminder ? (
+                <Pressable
+                  onPress={() => setRemindAt(prefs.defaultReminder)}
+                  style={[styles.smallBtn, { borderColor: colors.border }]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Use default reminder time"
+                >
+                  <Text style={[styles.smallBtnText, { color: colors.text }]} allowFontScaling>
+                    Use Default ({prefs.defaultReminder})
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                onPress={() => {
+                  const now = new Date();
+                  const hh = String(now.getHours()).padStart(2, '0');
+                  const mm = String(now.getMinutes()).padStart(2, '0');
+                  setRemindAt(`${hh}:${mm}`);
+                }}
+                style={[styles.smallBtn, { borderColor: colors.border }]}
+                accessibilityRole="button"
+                accessibilityLabel="Use current time"
+              >
+                <Text style={[styles.smallBtnText, { color: colors.text }]} allowFontScaling>
+                  Use Current Time
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Errors */}
+          {errors.form ? (
+            <Text style={[styles.error, { color: colors.danger, textAlign: 'center' }]} allowFontScaling>
+              {errors.form}
+            </Text>
+          ) : null}
+
+          {/* Footer actions */}
+          <View style={styles.footer}>
+            <Pressable
+              onPress={() => nav.goBack()}
+              style={[styles.btnOutline, { borderColor: colors.border }]}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
+            >
+              <Text style={[styles.btnOutlineText, { color: colors.text }]} allowFontScaling>
+                Cancel
+              </Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleSave}
+              disabled={saving}
+              style={({ pressed }) => [styles.btnPrimary, { backgroundColor: colors.primary, opacity: pressed || saving ? 0.9 : 1 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Save habit"
+            >
+              <Text style={styles.btnPrimaryText} allowFontScaling>
+                {saving ? 'Saving…' : 'Save'}
+              </Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
 
 export default AddHabitScreen;
+
+// Styles
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+  scroll: { padding: 16, paddingBottom: 32, gap: 12 },
+  title: { fontSize: 22, fontWeight: '700', marginBottom: 4 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, gap: 8 },
+  label: { fontSize: 13, fontWeight: '600', opacity: 0.8 },
+  label2: { fontSize: 12, marginTop: 8, opacity: 0.8 },
+  input: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16 },
+  segmented: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  segment: { flex: 1, paddingVertical: 8, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  segmentText: { fontSize: 14, fontWeight: '600' },
+  error: { fontSize: 12, marginTop: 4 },
+  footer: { flexDirection: 'row', gap: 12, marginTop: 16 },
+  btnOutline: { flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  btnOutlineText: { fontWeight: '600' },
+  btnPrimary: { flex: 1, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  btnPrimaryText: { color: '#fff', fontWeight: '700' },
+  smallBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth },
+  smallBtnText: { fontSize: 12, fontWeight: '600' },
+});
+
