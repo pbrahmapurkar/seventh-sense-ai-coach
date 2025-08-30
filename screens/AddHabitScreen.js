@@ -108,7 +108,7 @@ function AddHabitScreen() {
   }
 
   return (
-    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]]}>
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <Text style={[styles.title, { color: colors.text }]} allowFontScaling>
@@ -304,4 +304,3 @@ const styles = StyleSheet.create({
   smallBtn: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth },
   smallBtnText: { fontSize: 12, fontWeight: '600' },
 });
-
