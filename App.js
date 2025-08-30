@@ -6,7 +6,7 @@
 // - Shows minimal loading UI until hydration completes
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, Appearance, StatusBar } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, Appearance, StatusBar, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -178,6 +178,15 @@ function BootManager() {
 
 // Root App
 export default function App() {
+  // Ensure Android notification channel exists
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'Default',
+        importance: Notifications.AndroidImportance.DEFAULT,
+      }).catch(() => {});
+    }
+  }, []);
   return (
     <UserProvider>
       <SafeAreaProvider>
