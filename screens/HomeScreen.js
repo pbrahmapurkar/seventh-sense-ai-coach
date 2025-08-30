@@ -140,7 +140,12 @@ function HomeScreen() {
   // Loading state when store not hydrated
   if (!_hydrated) {
     return (
-      <SafeAreaView style={[styles.safe, { backgroundColor: bg }]}>\n        <View style={styles.center}>\n          <ActivityIndicator />\n          <Text style={[styles.muted, { color: muted }]}>Loading…</Text>\n        </View>\n      </SafeAreaView>
+      <SafeAreaView style={[styles.safe, { backgroundColor: bg }]}>
+<View style={styles.center}>
+<ActivityIndicator />
+<Text style={[styles.muted, { color: muted }]}>Loading…</Text>
+</View>
+</SafeAreaView>
     );
   }
 

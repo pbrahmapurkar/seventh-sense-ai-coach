@@ -142,7 +142,12 @@ function HabitDetailScreen() {
   }, [habit, nav]);
   if (!habit) {
     return (
-      <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]}>\n        <View style={styles.center}>\n          <ActivityIndicator />\n          <Text style={{ color: colors.muted }}>Loading…</Text>\n        </View>\n      </SafeAreaView>
+      <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]}>
+<View style={styles.center}>
+<ActivityIndicator />
+<Text style={{ color: colors.muted }}>Loading…</Text>
+</View>
+</SafeAreaView>
     );
   }
 
@@ -180,7 +185,18 @@ function HabitDetailScreen() {
       weekday = '';
     }
     return (
-      <View style={[styles.historyRow, { borderColor: colors.border }]}>\n        <Text style={[styles.historyDate, { color: colors.muted }]} allowFontScaling>\n          {weekday ? `${weekday} · ${key}` : key}\n        </Text>\n        <Text\n          style={[styles.historyMark, { color: done ? colors.primary : colors.muted }]}\n          accessibilityLabel={`${key}: ${done ? 'completed' : 'missed'}`}\n          allowFontScaling\n        >\n          {done ? '✓' : '—'}\n        </Text>\n      </View>
+      <View style={[styles.historyRow, { borderColor: colors.border }]}>
+<Text style={[styles.historyDate, { color: colors.muted }]} allowFontScaling>
+{weekday ? `${weekday} · ${key}` : key}
+</Text>
+<Text
+style={[styles.historyMark, { color: done ? colors.primary : colors.muted }]}
+accessibilityLabel={`${key}: ${done ? 'completed' : 'missed'}`}
+allowFontScaling
+>
+{done ? '✓' : '—'}
+</Text>
+</View>
     );
   };
 

@@ -83,8 +83,10 @@ export function isSameDay(a: DateKey, b: DateKey, tz: string): boolean {
   const zone = safeTZ(tz);
   const da = dateKeyToDateAtStartOfDay(a, zone);
   const db = dateKeyToDateAtStartOfDay(b, zone);
-  const ak = formatKeyFromYMD(...Object.values(getLocalYMDInTZ(da, zone)) as any);
-  const bk = formatKeyFromYMD(...Object.values(getLocalYMDInTZ(db, zone)) as any);
+  const { y: ay, m: am, d: ad } = getLocalYMDInTZ(da, zone);
+  const { y: by, m: bm, d: bd } = getLocalYMDInTZ(db, zone);
+  const ak = formatKeyFromYMD(ay, am, ad);
+  const bk = formatKeyFromYMD(by, bm, bd);
   return ak === bk;
 }
 

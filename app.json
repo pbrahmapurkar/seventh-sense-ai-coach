@@ -1,7 +1,8 @@
 {
   "expo": {
-    "name": "Seventh Sense AI Coach",
-    "slug": "seventh-sense-ai-coach",
+    "name": "Seventh Sense",
+    "slug": "seventh-sense",
+    "scheme": "seventhsense",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -13,21 +14,19 @@
       "backgroundColor": "#f8fafc"
     },
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "infoPlist": {
-        "NSUserNotificationsUsageDescription": "Seventh Sense uses notifications to remind you about your daily habits and provide evening recaps."
+        "NSUserNotificationUsageDescription": "We use notifications to remind you about your habits and evening recap."
       }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#f8fafc"
+        "backgroundColor": "#FFFFFF"
       },
-      "edgeToEdgeEnabled": true,
-      "permissions": [
-        "NOTIFICATIONS",
-        "VIBRATE"
-      ]
+      "permissions": [],
+      "package": "com.example.seventhsense",
+      "googleServicesFile": null
     },
     "web": {
       "favicon": "./assets/favicon.png"

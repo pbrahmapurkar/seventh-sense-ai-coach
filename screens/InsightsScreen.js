@@ -72,7 +72,39 @@ function InsightsScreen() {
   const renderHabitItem = useCallback(({ item }) => {
     const { habit, percent7, longest, set } = item;
     return (
-      <View style={[styles.habitRow, { borderColor: colors.border }]}>\n        <View style={styles.habitLeft}>\n          <ProgressRing size={36} stroke={4} progress={Math.max(0, Math.min(1, percent7 / 100))} label={null} progressColor={colors.primary} trackColor={'rgba(0,0,0,0.1)'} />\n        </View>\n        <View style={styles.habitMid}>\n          <Text style={[styles.habitName, { color: colors.text }]} numberOfLines={1} allowFontScaling>\n            {habit.name || 'Untitled Habit'}\n          </Text>\n          <Text style={[styles.habitMeta, { color: colors.muted }]} allowFontScaling>\n            Longest streak: {longest} {longest === 1 ? 'day' : 'days'}\n          </Text>\n          <View style={styles.barRow}>\n            {days7.map((d, i) => {\n              const done = set.has(d);\n              return (\n                <View\n                  key={d}\n                  style={[\n                    styles.barCell,\n                    { borderColor: colors.border, backgroundColor: done ? colors.primary : 'transparent', opacity: done ? 1 : 0.6 },\n                  ]}\n                  accessibilityLabel={`Day ${i + 1} ${d}: ${done ? 'completed' : 'missed'}`}\n                />\n              );\n            })}\n          </View>\n        </View>\n        <View style={styles.habitRight}>\n          <Text style={[styles.habitPercent, { color: colors.text }]} allowFontScaling>\n            {percent7}%\n          </Text>\n        </View>\n      </View>
+      <View style={[styles.habitRow, { borderColor: colors.border }]}>
+<View style={styles.habitLeft}>
+<ProgressRing size={36} stroke={4} progress={Math.max(0, Math.min(1, percent7 / 100))} label={null} progressColor={colors.primary} trackColor={'rgba(0,0,0,0.1)'} />
+</View>
+<View style={styles.habitMid}>
+<Text style={[styles.habitName, { color: colors.text }]} numberOfLines={1} allowFontScaling>
+{habit.name || 'Untitled Habit'}
+</Text>
+<Text style={[styles.habitMeta, { color: colors.muted }]} allowFontScaling>
+Longest streak: {longest} {longest === 1 ? 'day' : 'days'}
+</Text>
+<View style={styles.barRow}>
+{days7.map((d, i) => {
+const done = set.has(d);
+return (
+<View
+key={d}
+style={[
+styles.barCell,
+{ borderColor: colors.border, backgroundColor: done ? colors.primary : 'transparent', opacity: done ? 1 : 0.6 },
+]}
+accessibilityLabel={`Day ${i + 1} ${d}: ${done ? 'completed' : 'missed'}`}
+/>
+);
+})}
+</View>
+</View>
+<View style={styles.habitRight}>
+<Text style={[styles.habitPercent, { color: colors.text }]} allowFontScaling>
+{percent7}%
+</Text>
+</View>
+</View>
     );
   }, [colors.border, colors.primary, colors.text, colors.muted, days7]);
 

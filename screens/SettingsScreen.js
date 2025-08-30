@@ -189,7 +189,77 @@ function SettingsScreen() {
     <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]} accessibilityLabel="Settings screen">
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
         {/* Profile & Personalization */}
-        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>\n          <Text style={[styles.title, { color: colors.text }]} allowFontScaling>Settings</Text>\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Name</Text>\n          <TextInput\n            value={name}\n            onChangeText={setNameLocal}\n            placeholder="Your name"\n            placeholderTextColor={colors.muted}\n            style={[styles.input, { color: colors.text, borderColor: colors.border }]}\n            maxLength={40}\n            accessibilityLabel="Your name"\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Theme</Text>\n          <Segmented\n            value={themeSel}\n            onChange={setThemeSel}\n            options={[\n              { label: 'System', value: 'system' },\n              { label: 'Light', value: 'light' },\n              { label: 'Dark', value: 'dark' },\n            ]}\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>AI Tone</Text>\n          <Segmented\n            value={tone}\n            onChange={setTone}\n            options={[\n              { label: 'Coach', value: 'coach' },\n              { label: 'Friend', value: 'friend' },\n              { label: 'Zen', value: 'zen' },\n            ]}\n          />\n\n          <Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Default Reminder Time (optional)</Text>\n          <TextInput\n            value={remind}\n            onChangeText={setRemind}\n            placeholder="HH:mm (24h)"\n            placeholderTextColor={colors.muted}\n            style={[styles.input, { color: colors.text, borderColor: colors.border }]}\n            keyboardType="numbers-and-punctuation"\n            autoCapitalize="none"\n            accessibilityLabel="Default reminder time HH:mm"\n          />\n\n          <View style={styles.row}>\n            <Text style={{ color: colors.text }} allowFontScaling>Evening Recap Notifications</Text>\n            <Switch\n              value={recap}\n              onValueChange={() => setRecap((v) => !v)}\n              accessibilityLabel="Toggle evening recap notifications"\n            />\n          </View>\n\n          {errorText ? <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>{errorText}</Text> : null}\n\n          <View style={styles.actionsRow}>\n            <Pressable\n              onPress={handleSaveProfile}\n              disabled={busy}\n              style={[styles.btnPrimary, { backgroundColor: colors.primary, opacity: busy ? 0.9 : 1 }]}\n              accessibilityRole="button"\n              accessibilityLabel="Save settings"\n            >\n              <Text style={styles.btnPrimaryText} allowFontScaling>{busy ? 'Working…' : 'Save'}</Text>\n            </Pressable>\n          </View>\n        </View>
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+<Text style={[styles.title, { color: colors.text }]} allowFontScaling>Settings</Text>
+
+<Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Name</Text>
+<TextInput
+value={name}
+onChangeText={setNameLocal}
+placeholder="Your name"
+placeholderTextColor={colors.muted}
+style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+maxLength={40}
+accessibilityLabel="Your name"
+/>
+
+<Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Theme</Text>
+<Segmented
+value={themeSel}
+onChange={setThemeSel}
+options={[
+{ label: 'System', value: 'system' },
+{ label: 'Light', value: 'light' },
+{ label: 'Dark', value: 'dark' },
+]}
+/>
+
+<Text style={[styles.label, { color: colors.muted }]} allowFontScaling>AI Tone</Text>
+<Segmented
+value={tone}
+onChange={setTone}
+options={[
+{ label: 'Coach', value: 'coach' },
+{ label: 'Friend', value: 'friend' },
+{ label: 'Zen', value: 'zen' },
+]}
+/>
+
+<Text style={[styles.label, { color: colors.muted }]} allowFontScaling>Default Reminder Time (optional)</Text>
+<TextInput
+value={remind}
+onChangeText={setRemind}
+placeholder="HH:mm (24h)"
+placeholderTextColor={colors.muted}
+style={[styles.input, { color: colors.text, borderColor: colors.border }]}
+keyboardType="numbers-and-punctuation"
+autoCapitalize="none"
+accessibilityLabel="Default reminder time HH:mm"
+/>
+
+<View style={styles.row}>
+<Text style={{ color: colors.text }} allowFontScaling>Evening Recap Notifications</Text>
+<Switch
+value={recap}
+onValueChange={() => setRecap((v) => !v)}
+accessibilityLabel="Toggle evening recap notifications"
+/>
+</View>
+
+{errorText ? <Text style={[styles.error, { color: colors.danger }]} allowFontScaling>{errorText}</Text> : null}
+
+<View style={styles.actionsRow}>
+<Pressable
+onPress={handleSaveProfile}
+disabled={busy}
+style={[styles.btnPrimary, { backgroundColor: colors.primary, opacity: busy ? 0.9 : 1 }]}
+accessibilityRole="button"
+accessibilityLabel="Save settings"
+>
+<Text style={styles.btnPrimaryText} allowFontScaling>{busy ? 'Working…' : 'Save'}</Text>
+</Pressable>
+</View>
+</View>
 
         {/* Data */}
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>

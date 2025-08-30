@@ -22,6 +22,8 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -127,6 +129,7 @@ export async function scheduleDaily(habitId: string, timeHHmm: string, tz: strin
     // Cancel existing if any
     await cancelScheduled(habitId);
 
+    const trigger = { hour, minute, repeats: true } as Notifications.CalendarTriggerInput;
     const notifId = await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Seventh Sense',
@@ -134,7 +137,7 @@ export async function scheduleDaily(habitId: string, timeHHmm: string, tz: strin
         data: { habitId, type: 'habit-daily' },
         priority: Notifications.AndroidNotificationPriority.DEFAULT,
       },
-      trigger: { hour, minute, repeats: true },
+      trigger,
     });
 
     const map = await loadJSON<HabitNotifMap>(SS_NOTIF_MAP_V1, {});
@@ -224,7 +227,7 @@ export async function scheduleEveningRecapIfNeeded(tz: string, time: string = '2
         data: { type: 'recap' },
         priority: Notifications.AndroidNotificationPriority.DEFAULT,
       },
-      trigger: targetDate, // one-off date
+      trigger: { date: targetDate } as any, // one-off date
     });
 
     await saveJSON(SS_RECAP_STATE_V1, { dateKey: todayKey, notifId });
