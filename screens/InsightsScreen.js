@@ -1,574 +1,176 @@
-// InsightsScreen for Seventh Sense AI Coach
-// Shows habit statistics, streaks, and progress over time
+// InsightsScreen – Seventh Sense
+// Summary of 7/30-day completion + per-habit mini insights with accessible 7-day bar
 
-import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  ScrollView, 
-  TouchableOpacity 
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { SafeAreaView, View, Text, StyleSheet, ScrollView, FlatList, RefreshControl } from 'react-native';
+import { useTheme } from '@react-navigation/native';
+import { useUser } from '../context/UserContext';
 import { useHabitsStore } from '../store/habitsStore';
-import { getTodayKey, lastNDays } from '../utils/date';
+import { lastNDays } from '../utils/date';
 import ProgressRing from '../components/ProgressRing';
 
-const InsightsScreen = () => {
-  const navigation = useNavigation();
-  const { 
-    habits, 
-    getCompletionPercentage, 
-    getStreak,
-    isHydrated 
-  } = useHabitsStore();
-  
-  const [stats, setStats] = useState({
-    sevenDay: 0,
-    thirtyDay: 0,
-  });
-  const [habitStats, setHabitStats] = useState([]);
-  
-  // Load insights data
-  useEffect(() => {
-    if (isHydrated) {
-      loadInsights();
-    }
-  }, [isHydrated]);
-  
-  // Load insights data
-  const loadInsights = () => {
-    const today = getTodayKey();
-    const sevenDaysAgo = lastNDays(7)[0];
-    const thirtyDaysAgo = lastNDays(30)[0];
-    
-    // Calculate completion percentages
-    const sevenDayPercentage = getCompletionPercentage(sevenDaysAgo, today);
-    const thirtyDayPercentage = getCompletionPercentage(thirtyDaysAgo, today);
-    
-    setStats({
-      sevenDay: sevenDayPercentage,
-      thirtyDay: thirtyDayPercentage,
+function InsightsScreen() {
+  const theme = useTheme();
+  const { prefs } = useUser();
+  const tz = prefs?.timezone || 'UTC';
+
+  const habits = useHabitsStore((s) => s.habits) || [];
+  const getHabitLogs = useHabitsStore((s) => s.getHabitLogs);
+  const getStreak = useHabitsStore((s) => s.getStreak);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Theme tokens
+  const colors = {
+    bg: theme.colors.background || (theme.dark ? '#0B0F14' : '#F7F7F8'),
+    card: theme.colors.card || (theme.dark ? '#111827' : '#FFFFFF'),
+    border: theme.colors.border || 'rgba(0,0,0,0.12)',
+    text: theme.colors.text || (theme.dark ? '#F3F4F6' : '#111827'),
+    muted: theme.dark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
+    primary: theme.colors.primary || '#4F46E5',
+  };
+
+  // Days windows
+  const days7 = useMemo(() => {
+    const arr = lastNDays(7, tz); // newest → oldest
+    return arr.slice().reverse(); // oldest → newest for left→right bars
+  }, [tz]);
+  const days30 = useMemo(() => lastNDays(30, tz), [tz]); // newest → oldest (order irrelevant for counting)
+
+  // Per-habit stats (memoized)
+  const perHabit = useMemo(() => {
+    const active = (habits || []).filter((h) => !h.archived);
+    return active.map((h) => {
+      const logs = getHabitLogs ? getHabitLogs(h.id) || [] : [];
+      const set = new Set(logs.filter((l) => l.completed).map((l) => l.date));
+      const done7 = days7.reduce((acc, d) => acc + (set.has(d) ? 1 : 0), 0);
+      const done30 = days30.reduce((acc, d) => acc + (set.has(d) ? 1 : 0), 0);
+      const percent7 = Math.round(((done7 || 0) / 7) * 100);
+      const longest = getStreak ? (getStreak(h.id)?.longest || 0) : 0;
+      return { habit: h, done7, done30, percent7, longest, set };
     });
-    
-    // Calculate individual habit stats
-    const activeHabits = habits.filter(h => !h.archived);
-    const habitStatsData = activeHabits.map(habit => {
-      const streak = getStreak(habit.id);
-      return {
-        ...habit,
-        streak: streak.current,
-        longestStreak: streak.longest,
-      };
-    }).sort((a, b) => b.streak - a.streak);
-    
-    setHabitStats(habitStatsData);
-  };
-  
-  // Navigate to habit detail
-  const handleHabitPress = (habit) => {
-    navigation.navigate('HabitDetail', { 
-      habitId: habit.id,
-      habitName: habit.name 
-    });
-  };
-  
-  // Get type color
-  const getTypeColor = (type) => {
-    switch (type) {
-      case 'health':
-        return '#10b981';
-      case 'mind':
-        return '#8b5cf6';
-      default:
-        return '#6366f1';
-    }
-  };
-  
-  // Get type icon
-  const getTypeIcon = (type) => {
-    switch (type) {
-      case 'health':
-        return 'fitness-outline';
-      case 'mind':
-        return 'brain-outline';
-      default:
-        return 'star-outline';
-    }
-  };
-  
-  if (!isHydrated) {
+  }, [habits, getHabitLogs, getStreak, days7, days30]);
+
+  // Overall stats
+  const overall = useMemo(() => {
+    const nHabits = perHabit.length;
+    if (!nHabits) return { p7: 0, p30: 0, n7: 0, n30: 0 };
+    const n7 = perHabit.reduce((s, x) => s + x.done7, 0);
+    const n30 = perHabit.reduce((s, x) => s + x.done30, 0);
+    const p7 = Math.round((n7 / (7 * nHabits)) * 100);
+    const p30 = Math.round((n30 / (30 * nHabits)) * 100);
+    return { p7, p30, n7, n30 };
+  }, [perHabit]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    // Local recompute only (derived via memo). Just a small UX delay.
+    setTimeout(() => setRefreshing(false), 350);
+  }, []);
+
+  // Habit row renderer
+  const renderHabitItem = useCallback(({ item }) => {
+    const { habit, percent7, longest, set } = item;
     return (
-      <View style={styles.loadingContainer}>
-        <Ionicons name="analytics-outline" size={48} color="#6366f1" />
-        <Text style={styles.loadingText}>Loading insights...</Text>
-      </View>
+      <View style={[styles.habitRow, { borderColor: colors.border }]}>\n        <View style={styles.habitLeft}>\n          <ProgressRing size={36} stroke={4} progress={Math.max(0, Math.min(1, percent7 / 100))} label={null} progressColor={colors.primary} trackColor={'rgba(0,0,0,0.1)'} />\n        </View>\n        <View style={styles.habitMid}>\n          <Text style={[styles.habitName, { color: colors.text }]} numberOfLines={1} allowFontScaling>\n            {habit.name || 'Untitled Habit'}\n          </Text>\n          <Text style={[styles.habitMeta, { color: colors.muted }]} allowFontScaling>\n            Longest streak: {longest} {longest === 1 ? 'day' : 'days'}\n          </Text>\n          <View style={styles.barRow}>\n            {days7.map((d, i) => {\n              const done = set.has(d);\n              return (\n                <View\n                  key={d}\n                  style={[\n                    styles.barCell,\n                    { borderColor: colors.border, backgroundColor: done ? colors.primary : 'transparent', opacity: done ? 1 : 0.6 },\n                  ]}\n                  accessibilityLabel={`Day ${i + 1} ${d}: ${done ? 'completed' : 'missed'}`}\n                />\n              );\n            })}\n          </View>\n        </View>\n        <View style={styles.habitRight}>\n          <Text style={[styles.habitPercent, { color: colors.text }]} allowFontScaling>\n            {percent7}%\n          </Text>\n        </View>\n      </View>
     );
-  }
-  
+  }, [colors.border, colors.primary, colors.text, colors.muted, days7]);
+
   return (
-    <View style={styles.container}>
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Insights</Text>
-          <Text style={styles.subtitle}>
-            Track your progress and celebrate your achievements
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]} accessibilityLabel="Insights screen">
+      <ScrollView
+        contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      >
+        {/* Summary */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.title, { color: colors.text }]} allowFontScaling>
+            Insights
+          </Text>
+          <View style={styles.tiles}>
+            <View
+              style={[styles.tile, { borderColor: colors.border }]}
+              accessibilityLabel={`Last 7 days ${overall.p7}% · ${overall.n7} of ${perHabit.length * 7} done`}
+            >
+              <Text style={[styles.tileValue, { color: colors.text }]} allowFontScaling>
+                {overall.p7}%
+              </Text>
+              <Text style={[styles.tileLabel, { color: colors.muted }]} allowFontScaling>
+                Last 7 days
+              </Text>
+            </View>
+            <View
+              style={[styles.tile, { borderColor: colors.border }]}
+              accessibilityLabel={`Last 30 days ${overall.p30}% · ${overall.n30} of ${perHabit.length * 30} done`}
+            >
+              <Text style={[styles.tileValue, { color: colors.text }]} allowFontScaling>
+                {overall.p30}%
+              </Text>
+              <Text style={[styles.tileLabel, { color: colors.muted }]} allowFontScaling>
+                Last 30 days
+              </Text>
+            </View>
+          </View>
+          <Text style={[styles.tileSub, { color: colors.muted }]} allowFontScaling>
+            {perHabit.length
+              ? `${overall.n7} of ${perHabit.length * 7} done (7d) · ${overall.n30} of ${perHabit.length * 30} done (30d)`
+              : 'Add a habit to see insights.'}
           </Text>
         </View>
-        
-        {/* Overall Progress Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Overall Progress</Text>
-          
-          <View style={styles.progressCards}>
-            <View style={styles.progressCard}>
-              <ProgressRing
-                size={80}
-                stroke={6}
-                progress={stats.sevenDay / 100}
-                showPercentage={true}
-                color="#6366f1"
-              />
-              <Text style={styles.progressLabel}>7 Days</Text>
-              <Text style={styles.progressSubtitle}>This week</Text>
-            </View>
-            
-            <View style={styles.progressCard}>
-              <ProgressRing
-                size={80}
-                stroke={6}
-                progress={stats.thirtyDay / 100}
-                showPercentage={true}
-                color="#10b981"
-              />
-              <Text style={styles.progressLabel}>30 Days</Text>
-              <Text style={styles.progressSubtitle}>This month</Text>
-            </View>
-          </View>
-        </View>
-        
-        {/* Habits Overview Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Habits Overview</Text>
-          
-          {habitStats.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Ionicons name="add-circle-outline" size={48} color="#94a3b8" />
-              <Text style={styles.emptyStateTitle}>No habits yet</Text>
-              <Text style={styles.emptyStateSubtitle}>
-                Add some habits to start tracking your progress
-              </Text>
-              <TouchableOpacity
-                style={styles.addHabitButton}
-                onPress={() => navigation.navigate('AddHabit')}
-                accessibilityRole="button"
-                accessibilityLabel="Add your first habit"
-              >
-                <Ionicons name="add" size={20} color="#ffffff" />
-                <Text style={styles.addHabitButtonText}>Add Habit</Text>
-              </TouchableOpacity>
-            </View>
+
+        {/* Habits list */}
+        <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border, paddingBottom: 6 }]}>
+          <Text style={[styles.sectionTitle, { color: colors.text }]} allowFontScaling>
+            By Habit (7 days)
+          </Text>
+          {perHabit.length === 0 ? (
+            <Text style={{ color: colors.muted }} allowFontScaling>
+              No habits yet. Add one from Home.
+            </Text>
           ) : (
-            <View style={styles.habitsList}>
-              {habitStats.map((habit) => (
-                <TouchableOpacity
-                  key={habit.id}
-                  style={styles.habitCard}
-                  onPress={() => handleHabitPress(habit)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${habit.name} habit, current streak ${habit.streak} days`}
-                  accessibilityHint="Tap to view detailed habit information"
-                >
-                  {/* Left: Icon and Info */}
-                  <View style={styles.habitInfo}>
-                    <View style={[
-                      styles.habitIcon,
-                      { backgroundColor: getTypeColor(habit.type) + '20' }
-                    ]}>
-                      <Ionicons 
-                        name={getTypeIcon(habit.type)} 
-                        size={24} 
-                        color={getTypeColor(habit.type)} 
-                      />
-                    </View>
-                    
-                    <View style={styles.habitDetails}>
-                      <Text style={styles.habitName}>{habit.name}</Text>
-                      <Text style={styles.habitType}>
-                        {habit.type.charAt(0).toUpperCase() + habit.type.slice(1)} • {habit.freq}
-                      </Text>
-                    </View>
-                  </View>
-                  
-                  {/* Right: Streak Info */}
-                  <View style={styles.streakInfo}>
-                    <View style={styles.currentStreak}>
-                      <Text style={styles.streakNumber}>{habit.streak}</Text>
-                      <Text style={styles.streakLabel}>Current</Text>
-                    </View>
-                    
-                    <View style={styles.longestStreak}>
-                      <Text style={styles.streakNumber}>{habit.longestStreak}</Text>
-                      <Text style={styles.streakLabel}>Longest</Text>
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <FlatList
+              data={perHabit}
+              keyExtractor={(x) => String(x.habit.id)}
+              renderItem={renderHabitItem}
+              scrollEnabled={false}
+              ItemSeparatorComponent={() => <View style={[styles.sep, { borderColor: colors.border }]} />}
+              contentContainerStyle={{ paddingTop: 6 }}
+            />
           )}
         </View>
-        
-        {/* Quick Stats Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Stats</Text>
-          
-          <View style={styles.quickStats}>
-            <View style={styles.quickStatCard}>
-              <Ionicons name="flame-outline" size={24} color="#f59e0b" />
-              <Text style={styles.quickStatNumber}>
-                {habitStats.reduce((sum, h) => sum + h.streak, 0)}
-              </Text>
-              <Text style={styles.quickStatLabel}>Total Streak Days</Text>
-            </View>
-            
-            <View style={styles.quickStatCard}>
-              <Ionicons name="trophy-outline" size={24} color="#8b5cf6" />
-              <Text style={styles.quickStatNumber}>
-                {habitStats.reduce((max, h) => Math.max(max, h.longestStreak), 0)}
-              </Text>
-              <Text style={styles.quickStatLabel}>Best Streak</Text>
-            </View>
-            
-            <View style={styles.quickStatCard}>
-              <Ionicons name="checkmark-circle-outline" size={24} color="#10b981" />
-              <Text style={styles.quickStatNumber}>
-                {habitStats.filter(h => h.streak > 0).length}
-              </Text>
-              <Text style={styles.quickStatLabel}>Active Habits</Text>
-            </View>
-          </View>
-        </View>
-        
-        {/* Tips Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Tips for Success</Text>
-          
-          <View style={styles.tipsList}>
-            <View style={styles.tipCard}>
-              <View style={styles.tipIcon}>
-                <Ionicons name="bulb-outline" size={20} color="#6366f1" />
-              </View>
-              <Text style={styles.tipText}>
-                Start with small, achievable habits to build momentum
-              </Text>
-            </View>
-            
-            <View style={styles.tipCard}>
-              <View style={styles.tipIcon}>
-                <Ionicons name="time-outline" size={20} color="#10b981" />
-              </View>
-              <Text style={styles.tipText}>
-                Consistency beats perfection - focus on showing up every day
-              </Text>
-            </View>
-            
-            <View style={styles.tipCard}>
-              <View style={styles.tipIcon}>
-                <Ionicons name="trending-up-outline" size={20} color="#8b5cf6" />
-              </View>
-              <Text style={styles.tipText}>
-                Track your progress to stay motivated and identify patterns
-              </Text>
-            </View>
-          </View>
-        </View>
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
-};
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f8fafc',
-  },
-  
-  loadingText: {
-    fontSize: 18,
-    color: '#64748b',
-    marginTop: 16,
-  },
-  
-  scrollView: {
-    flex: 1,
-  },
-  
-  header: {
-    alignItems: 'center',
-    paddingTop: 20,
-    paddingBottom: 32,
-    paddingHorizontal: 24,
-  },
-  
-  title: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  
-  subtitle: {
-    fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 24,
-  },
-  
-  section: {
-    marginBottom: 32,
-    paddingHorizontal: 20,
-  },
-  
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 20,
-  },
-  
-  progressCards: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  
-  progressCard: {
-    flex: 1,
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 20,
-    padding: 24,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  
-  progressLabel: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginTop: 16,
-    marginBottom: 4,
-  },
-  
-  progressSubtitle: {
-    fontSize: 14,
-    color: '#64748b',
-  },
-  
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-  },
-  
-  emptyStateTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  
-  emptyStateSubtitle: {
-    fontSize: 14,
-    color: '#64748b',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 20,
-  },
-  
-  addHabitButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#6366f1',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-    gap: 8,
-  },
-  
-  addHabitButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  
-  habitsList: {
-    gap: 12,
-  },
-  
-  habitCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 3,
-  },
-  
-  habitInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  
-  habitIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 16,
-  },
-  
-  habitDetails: {
-    flex: 1,
-  },
-  
-  habitName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-    marginBottom: 4,
-  },
-  
-  habitType: {
-    fontSize: 14,
-    color: '#64748b',
-  },
-  
-  streakInfo: {
-    alignItems: 'flex-end',
-  },
-  
-  currentStreak: {
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  
-  longestStreak: {
-    alignItems: 'center',
-  },
-  
-  streakNumber: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#0f172a',
-  },
-  
-  streakLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    textTransform: 'uppercase',
-    fontWeight: '500',
-  },
-  
-  quickStats: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  
-  quickStatCard: {
-    flex: 1,
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 3,
-  },
-  
-  quickStatNumber: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#0f172a',
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  
-  quickStatLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  
-  tipsList: {
-    gap: 12,
-  },
-  
-  tipCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 3,
-  },
-  
-  tipIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#f1f5f9',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    marginTop: 2,
-  },
-  
-  tipText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#0f172a',
-    lineHeight: 20,
-  },
-});
+}
 
 export default InsightsScreen;
+
+const styles = StyleSheet.create({
+  safe: { flex: 1 },
+
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 12, padding: 12, marginBottom: 12 },
+  title: { fontSize: 20, fontWeight: '700', marginBottom: 8 },
+
+  tiles: { flexDirection: 'row', gap: 12 },
+  tile: { flex: 1, alignItems: 'center', paddingVertical: 12, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10 },
+  tileValue: { fontSize: 24, fontWeight: '800' },
+  tileLabel: { fontSize: 12, marginTop: 4 },
+  tileSub: { fontSize: 12, marginTop: 8 },
+
+  sectionTitle: { fontSize: 16, fontWeight: '700', marginBottom: 6 },
+
+  habitRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  habitLeft: { width: 44, alignItems: 'center' },
+  habitMid: { flex: 1, paddingHorizontal: 8 },
+  habitRight: { width: 48, alignItems: 'flex-end' },
+
+  habitName: { fontSize: 15, fontWeight: '600' },
+  habitMeta: { fontSize: 12, marginTop: 2 },
+  habitPercent: { fontSize: 16, fontWeight: '700' },
+
+  barRow: { flexDirection: 'row', gap: 4, marginTop: 8 },
+  barCell: { width: 16, height: 8, borderWidth: StyleSheet.hairlineWidth, borderRadius: 3 },
+
+  sep: { borderBottomWidth: StyleSheet.hairlineWidth },
+});
+
